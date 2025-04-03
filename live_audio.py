@@ -38,6 +38,10 @@ import sys
 import traceback
 import time
 from collections import deque
+import multiprocessing
+import queue
+import threading
+import json
 
 import cv2
 import pyaudio
@@ -45,57 +49,180 @@ import PIL.Image
 import mss
 
 import argparse
-import json
 
 from google import genai
 
 
+class SentimentAnalysisProcess(multiprocessing.Process):
+    """A separate process for sentiment analysis to avoid interfering with the voice conversation."""
+    
+    def __init__(self, api_key, sentiment_model_name, audio_queue):
+        super().__init__()
+        self.api_key = api_key
+        self.sentiment_model_name = sentiment_model_name
+        self.audio_queue = audio_queue
+        self.sentiment_history = multiprocessing.Manager().list()  # Shared list for sentiment results
+        self.exit_flag = multiprocessing.Event()
+        
+    def run(self):
+        """Main process function that runs sentiment analysis on audio chunks."""
+        print("Starting sentiment analysis process...")
+        
+        # Initialize the client
+        self.sentiment_client = genai.Client(api_key=self.api_key)
+        
+        # Buffer for collecting audio chunks
+        audio_buffer = []
+        last_process_time = 0
+        chunk_duration = 10  # 10 seconds per chunk
+        
+        while not self.exit_flag.is_set():
+            try:
+                # Try to get audio data with a timeout to allow checking the exit flag
+                try:
+                    audio_chunk = self.audio_queue.get(timeout=0.5)
+                    audio_buffer.append(audio_chunk)
+                except queue.Empty:
+                    # No data available, just continue
+                    pass
+                
+                # Process periodically if we have enough data
+                current_time = time.time()
+                if current_time - last_process_time >= chunk_duration and len(audio_buffer) >= 2:
+                    last_process_time = current_time
+                    
+                    # Process the audio in a separate thread to avoid blocking
+                    analysis_thread = threading.Thread(
+                        target=self.analyze_audio_sentiment,
+                        args=(audio_buffer.copy(),)
+                    )
+                    analysis_thread.daemon = True
+                    analysis_thread.start()
+                    
+                    # Clear the buffer after starting analysis
+                    audio_buffer = []
+                    
+            except Exception as e:
+                print(f"Error in sentiment analysis process: {e}")
+                traceback.print_exc()
+        
+        print("Sentiment analysis process exiting...")
+    
+    def analyze_audio_sentiment(self, audio_chunks):
+        """Analyze the sentiment of the collected audio chunks."""
+        try:
+            # Filter for user chunks only
+            user_chunks = [chunk for chunk in audio_chunks if chunk['source'] == 'user']
+            
+            if not user_chunks:
+                print("No user audio to analyze")
+                return
+                
+            print(f"\nAnalyzing sentiment for {len(user_chunks)} user audio chunks...")
+            
+            # Combine user audio chunks for processing
+            combined_audio = b''.join([chunk['data'] for chunk in user_chunks])
+            
+            # Write the audio to a temporary WAV file
+            import tempfile
+            import wave
+            
+            # Create a temporary file that gets deleted automatically when closed
+            temp_file_path = tempfile.gettempdir() + '/' + next(tempfile._get_candidate_names()) + '.wav'
+            
+            # Write the audio data to the file
+            with wave.open(temp_file_path, 'wb') as wf:
+                wf.setnchannels(1)  # Mono
+                wf.setsampwidth(2)  # 16-bit
+                wf.setframerate(16000)  # 16kHz sample rate
+                wf.writeframes(combined_audio)
+            
+            # Upload the file for Gemini to analyze
+            audio_file = self.sentiment_client.files.upload(
+                file=temp_file_path
+            )
+            
+            # Create the prompt
+            prompt = "Analyze the sentiment of this audio. Classify it as exactly one of: positive (1), neutral (0), or negative (-1). Return only the number."
+            
+            # Call the sentiment model
+            response = self.sentiment_client.models.generate_content(
+                model=self.sentiment_model_name,
+                contents=[prompt, audio_file]
+            )
+            
+            # Extract the sentiment score
+            sentiment_text = response.text.strip()
+            
+            # Try to clean up the temp file, but don't cause an error if it fails
+            try:
+                import os
+                os.unlink(temp_file_path)
+            except Exception as e:
+                print(f"Note: Could not delete temporary file {temp_file_path}: {e}")
+                # This is not a critical error, so we continue processing
+            
+            # Parse the response to get the sentiment value
+            if "1" in sentiment_text:
+                sentiment_value = 1
+                sentiment_label = "positive"
+            elif "-1" in sentiment_text:
+                sentiment_value = -1
+                sentiment_label = "negative"
+            else:
+                sentiment_value = 0
+                sentiment_label = "neutral"
+                
+            # Store the result in shared memory
+            result = {
+                "timestamp": time.time(),
+                "sentiment_value": sentiment_value,
+                "sentiment_label": sentiment_label,
+                "raw_response": sentiment_text
+            }
+            self.sentiment_history.append(result)
+            
+            print(f"Sentiment analysis result: {sentiment_label} ({sentiment_value})")
+            
+        except Exception as e:
+            print(f"Error in sentiment analysis: {e}")
+            traceback.print_exc()
 
-FORMAT = pyaudio.paInt16
-CHANNELS = 1
-SEND_SAMPLE_RATE = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE = 1024
-
-MODEL = "models/gemini-2.0-flash-exp"
-
-DEFAULT_MODE = "none"
-
-api_key = json.load(open(".api_key.json"))["api_key"]
-voice_client = genai.Client(api_key=api_key, http_options={"api_version": "v1alpha"})
-
-
-CONFIG = {"response_modalities": ["AUDIO"]}
-
-pya = pyaudio.PyAudio()
-
-
+    def stop(self):
+        """Signal the process to exit."""
+        self.exit_flag.set()
 
 
 class AudioLoop:
-    def __init__(self, video_mode=DEFAULT_MODE, enable_downstream=False):
+    def __init__(self, video_mode="none", enable_downstream=False):
+        self.FORMAT = pyaudio.paInt16
+        self.CHANNELS = 1
+        self.SEND_SAMPLE_RATE = 16000
+        self.RECEIVE_SAMPLE_RATE = 24000
+        self.CHUNK_SIZE = 1024
+
+        self.DEFAULT_MODE = video_mode
+
+        self.api_key = json.load(open(".api_key.json"))["api_key"]
+
+        self.CONFIG = {"response_modalities": ["AUDIO"]}
+
+        self.pya = pyaudio.PyAudio()
+
+        self.voice_client = genai.Client(api_key=self.api_key, http_options={"api_version": "v1alpha"})
+        self.sentiment_model = "models/gemini-2.0-flash-lite"
+        self.voice_model = "models/gemini-2.0-flash-exp"
         self.video_mode = video_mode
         self.enable_downstream = enable_downstream  # Flag to enable downstream processing
 
         self.audio_in_queue = None
         self.out_queue = None
-        self.combined_audio_queue = None  # Queue for combined audio
-        self.downstream_queue = None  # Queue for downstream processing
-
-        self.session = None
-        self.downstream_model = None  # Placeholder for downstream model
-        
-        self.send_text_task = None
-        self.receive_audio_task = None
-        self.play_audio_task = None
         self.collected_audio_data = []  # List to store collected audio chunks
         
-        # For downstream processing
-        self.buffer_size = 5  # Number of chunks to buffer before processing
-        self.audio_buffer = deque(maxlen=self.buffer_size)
-        self.last_process_time = 0
-        self.process_interval = 0.5  # Process every half second
-
+        # For sentiment analysis in a separate process
+        self.sentiment_process = None
+        self.audio_mp_queue = None
+        
     async def send_text(self):
         while True:
             text = await asyncio.to_thread(
@@ -179,98 +306,51 @@ class AudioLoop:
             msg = await self.out_queue.get()
             await self.session.send(input=msg)
 
-    async def process_audio_for_downstream(self):
-        """Process combined audio and send to downstream model in real-time."""
-        print("Starting downstream audio processing...")
-        
-        # Initialize the downstream model here if needed
-        # This is a placeholder - replace with actual model initialization
-        # self.downstream_model = genai.GenerativeModel(...)
-        
-        while True:
-            # Get audio chunk from the combined queue
-            audio_chunk = await self.combined_audio_queue.get()
-            
-            # Add to buffer and also store in collected data
-            self.audio_buffer.append(audio_chunk)
-            self.collected_audio_data.append(audio_chunk)
-            
-            # Also put in downstream queue for potential consumers
-            await self.downstream_queue.put(audio_chunk)
-            
-            # Process periodically to avoid overwhelming the model
-            current_time = time.time()
-            if current_time - self.last_process_time >= self.process_interval and len(self.audio_buffer) >= 2:
-                self.last_process_time = current_time
-                
-                # Process the buffered audio
-                await self.send_to_downstream_model()
-                
-    async def send_to_downstream_model(self):
-        """Send buffered audio to a downstream model for sentiment analysis."""
-        # This is where you would implement the connection to another Gemini model
-        # For now, we'll just print the buffer info
-        
-        user_chunks = [chunk for chunk in self.audio_buffer if chunk['source'] == 'user']
-        model_chunks = [chunk for chunk in self.audio_buffer if chunk['source'] == 'model']
-        
-        print(f"\nProcessing audio batch: {len(user_chunks)} user chunks, {len(model_chunks)} model chunks")
-        
-        # Example of how you might prepare data for a downstream model
-        # Replace this with actual implementation
-        """
-        # Example pseudocode for calling a downstream model:
-        if self.downstream_model:
-            try:
-                # Prepare audio data for the model (might need to convert to appropriate format)
-                # This might involve combining chunks, resampling, etc.
-                response = await self.downstream_model.generate_content(
-                    contents=[{
-                        "parts": [
-                            {"text": "Analyze the sentiment and emotion in this conversation:"},
-                            {"audio": {'mime_type': 'audio/pcm', 'data': processed_audio}}
-                        ]
-                    }]
-                )
-                sentiment_result = response.text
-                print(f"Sentiment analysis: {sentiment_result}")
-            except Exception as e:
-                print(f"Error in downstream processing: {e}")
-        """
-        
-        # Clear buffer after processing
-        self.audio_buffer.clear()
-
     async def listen_audio(self):
-        mic_info = pya.get_default_input_device_info()
+        mic_info = self.pya.get_default_input_device_info()
         self.audio_stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=SEND_SAMPLE_RATE,
+            self.pya.open,
+            format=self.FORMAT,
+            channels=self.CHANNELS,
+            rate=self.SEND_SAMPLE_RATE,
             input=True,
             input_device_index=mic_info["index"],
-            frames_per_buffer=CHUNK_SIZE,
+            frames_per_buffer=self.CHUNK_SIZE,
         )
         if __debug__:
             kwargs = {"exception_on_overflow": False}
         else:
             kwargs = {}
         while True:
-            data = await asyncio.to_thread(self.audio_stream.read, CHUNK_SIZE, **kwargs)
-            # Create user audio chunk
-            user_audio_chunk = {
-                "source": "user", 
-                "data": data, 
-                "rate": SEND_SAMPLE_RATE,
-                "timestamp": time.time()
-            }
-            
-            # Put user audio into combined queue
-            await self.combined_audio_queue.put(user_audio_chunk)
-            
-            # Also put into output queue for sending to model
-            await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+            try:
+                data = await asyncio.to_thread(self.audio_stream.read, self.CHUNK_SIZE, **kwargs)
+                
+                # Create user audio chunk
+                user_audio_chunk = {
+                    "source": "user", 
+                    "data": data, 
+                    "rate": self.SEND_SAMPLE_RATE,
+                    "timestamp": time.time()
+                }
+                
+                # Add to collected data
+                self.collected_audio_data.append(user_audio_chunk)
+                
+                # Send to sentiment analysis process if enabled
+                if self.enable_downstream and self.audio_mp_queue:
+                    try:
+                        # Use non-blocking put with a short timeout
+                        self.audio_mp_queue.put(dict(user_audio_chunk), timeout=0.1)
+                    except (queue.Full, Exception) as e:
+                        # Skip if queue is full or any other error occurs
+                        if isinstance(e, Exception) and not isinstance(e, queue.Full):
+                            print(f"Error sending to sentiment process: {e}")
+                
+                # Send to the model
+                await self.out_queue.put({"data": data, "mime_type": "audio/pcm"})
+            except Exception as e:
+                print(f"Error in listen_audio: {e}")
+                # Continue trying to listen rather than crashing
 
     async def receive_audio(self):
         "Background task to reads from the websocket and write pcm chunks to the output queue"
@@ -292,41 +372,64 @@ class AudioLoop:
 
     async def play_audio(self):
         stream = await asyncio.to_thread(
-            pya.open,
-            format=FORMAT,
-            channels=CHANNELS,
-            rate=RECEIVE_SAMPLE_RATE,
+            self.pya.open,
+            format=self.FORMAT,
+            channels=self.CHANNELS,
+            rate=self.RECEIVE_SAMPLE_RATE,
             output=True,
         )
         while True:
-            bytestream = await self.audio_in_queue.get()
-            
-            # Create model audio chunk
-            model_audio_chunk = {
-                "source": "model", 
-                "data": bytestream, 
-                "rate": RECEIVE_SAMPLE_RATE,
-                "timestamp": time.time()
-            }
-            
-            # Put model audio into combined queue 
-            await self.combined_audio_queue.put(model_audio_chunk)
-            
-            # Play the audio
-            await asyncio.to_thread(stream.write, bytestream)
+            try:
+                bytestream = await self.audio_in_queue.get()
+                
+                # Create model audio chunk
+                model_audio_chunk = {
+                    "source": "model", 
+                    "data": bytestream, 
+                    "rate": self.RECEIVE_SAMPLE_RATE,
+                    "timestamp": time.time()
+                }
+                
+                # Add to collected data
+                self.collected_audio_data.append(model_audio_chunk)
+                
+                # Send to sentiment analysis process if enabled
+                if self.enable_downstream and self.audio_mp_queue:
+                    try:
+                        # Use non-blocking put with a short timeout
+                        self.audio_mp_queue.put(dict(model_audio_chunk), timeout=0.1)
+                    except (queue.Full, Exception) as e:
+                        # Skip if queue is full or any other error occurs
+                        if isinstance(e, Exception) and not isinstance(e, queue.Full):
+                            print(f"Error sending to sentiment process: {e}")
+                
+                # Play the audio - this should always happen
+                await asyncio.to_thread(stream.write, bytestream)
+            except Exception as e:
+                print(f"Error in play_audio: {e}")
+                # Continue trying to play other audio rather than crashing
 
     async def run(self):
+        # Start the sentiment analysis process if enabled
+        if self.enable_downstream:
+            self.audio_mp_queue = multiprocessing.Queue(maxsize=1000)
+            self.sentiment_process = SentimentAnalysisProcess(
+                api_key=self.api_key,
+                sentiment_model_name=self.sentiment_model,
+                audio_queue=self.audio_mp_queue
+            )
+            self.sentiment_process.start()
+            print("Sentiment analysis process started")
+            
         try:
             async with (
-                voice_client.aio.live.connect(model=MODEL, config=CONFIG) as session,
+                self.voice_client.aio.live.connect(model=self.voice_model, config=self.CONFIG) as session,
                 asyncio.TaskGroup() as tg,
             ):
                 self.session = session
 
                 self.audio_in_queue = asyncio.Queue()
                 self.out_queue = asyncio.Queue(maxsize=5)
-                self.combined_audio_queue = asyncio.Queue()  # Initialize combined queue
-                self.downstream_queue = asyncio.Queue()  # Queue that external consumers can access
                 
                 send_text_task = tg.create_task(self.send_text())
                 tg.create_task(self.send_realtime())
@@ -336,12 +439,11 @@ class AudioLoop:
                 elif self.video_mode == "screen":
                     tg.create_task(self.get_screen())
 
-                tg.create_task(self.receive_audio())
-                tg.create_task(self.play_audio())
+                # First start the playback task
+                play_audio_task = tg.create_task(self.play_audio())
                 
-                # Add the downstream processing task if enabled
-                if self.enable_downstream:
-                    tg.create_task(self.process_audio_for_downstream())
+                # Then start the receiving task
+                tg.create_task(self.receive_audio())
 
                 await send_text_task
                 raise asyncio.CancelledError("User requested exit")
@@ -354,27 +456,40 @@ class AudioLoop:
                 self.audio_stream.close()
             traceback.print_exception(EG)
         finally:
+            # Stop the sentiment analysis process if running
+            if self.sentiment_process:
+                print("Stopping sentiment analysis process...")
+                self.sentiment_process.stop()
+                self.sentiment_process.join(timeout=5)
+                if self.sentiment_process.is_alive():
+                    print("Sentiment process did not terminate, forcing termination...")
+                    self.sentiment_process.terminate()
+                
             # Ensure audio stream is closed if it exists and is open
             if hasattr(self, 'audio_stream') and self.audio_stream and not self.audio_stream.is_stopped():
                  self.audio_stream.stop_stream()
                  self.audio_stream.close()
-            # Collect all remaining audio data
-            if self.combined_audio_queue:
-                while not self.combined_audio_queue.empty():
-                    self.collected_audio_data.append(self.combined_audio_queue.get_nowait())
-            print(f"Collected {len(self.collected_audio_data)} audio chunks.")
-            return self.collected_audio_data # Return the collected data
+                 
+            # Collect sentiment results if available
+            sentiment_results = []
+            if self.enable_downstream and self.sentiment_process:
+                sentiment_results = list(self.sentiment_process.sentiment_history)
+                
+            print(f"Collected {len(self.collected_audio_data)} audio chunks and {len(sentiment_results)} sentiment results.")
+            
+            # Return the results
+            return {
+                "audio_data": self.collected_audio_data,
+                "sentiment_results": sentiment_results
+            }
 
 
 if __name__ == "__main__":
-    #list_available_models() # Call the updated function
-
-
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--mode",
         type=str,
-        default=DEFAULT_MODE,
+        default="none",
         help="pixels to stream from",
         choices=["camera", "screen", "none"],
     )
@@ -385,11 +500,41 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main = AudioLoop(video_mode=args.mode, enable_downstream=args.downstream)
-    collected_audio = asyncio.run(main.run())
+    results = asyncio.run(main.run())
 
-    # Now you can process the collected_audio list
-    # Each item is a dict: {"source": "user/model", "data": bytes, "rate": int, "timestamp": float}
-    if collected_audio:
-        print(f"Successfully collected audio data. Number of chunks: {len(collected_audio)}")
+    # process the collected data
+    audio_data = results["audio_data"]
+    sentiment_results = results["sentiment_results"] if "sentiment_results" in results else []
+    
+    if audio_data:
+        print(f"Successfully collected audio data. Number of chunks: {len(audio_data)}")
+        
+        # Print sentiment analysis results if available
+        if args.downstream and sentiment_results:
+            print("\n===== SENTIMENT ANALYSIS SUMMARY =====")
+            print(f"Total sentiment samples: {len(sentiment_results)}")
+            
+            # Count occurrences of each sentiment
+            sentiment_counts = {
+                "positive": sum(1 for s in sentiment_results if s["sentiment_value"] == 1),
+                "neutral": sum(1 for s in sentiment_results if s["sentiment_value"] == 0),
+                "negative": sum(1 for s in sentiment_results if s["sentiment_value"] == -1)
+            }
+            
+            # Print counts
+            print(f"Positive responses: {sentiment_counts['positive']}")
+            print(f"Neutral responses: {sentiment_counts['neutral']}")
+            print(f"Negative responses: {sentiment_counts['negative']}")
+            
+            # Determine overall sentiment
+            if sentiment_counts["positive"] > max(sentiment_counts["neutral"], sentiment_counts["negative"]):
+                overall = "positive"
+            elif sentiment_counts["negative"] > max(sentiment_counts["neutral"], sentiment_counts["positive"]):
+                overall = "negative"
+            else:
+                overall = "neutral"
+                
+            print(f"Overall conversation sentiment: {overall}")
+            print("======================================")
     else:
         print("No audio data was collected.")
