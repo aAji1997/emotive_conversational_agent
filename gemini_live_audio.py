@@ -203,7 +203,7 @@ class AudioLoop:
 
         self.DEFAULT_MODE = video_mode
 
-        self.api_key = json.load(open(".api_key.json"))["api_key"]
+        self.api_key = json.load(open(".api_key.json"))["gemini_api_key"]
 
         self.CONFIG = {"response_modalities": ["AUDIO"]}
 
