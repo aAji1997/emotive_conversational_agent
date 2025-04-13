@@ -8,6 +8,15 @@ import time
 import numpy as np
 import multiprocessing
 import queue
+import threading
+import random
+import os
+import traceback
+
+# Dash / Plotting Imports
+import dash
+import dash_mantine_components as dmc
+from dash import dcc, html, Input, Output
 
 # Attempt to import sentiment analyzer, handle gracefully if it doesn't exist
 try:
@@ -17,11 +26,27 @@ except ImportError:
     print("WARNING: sentiment_analyzer.py not found or SentimentAnalysisProcess class missing.")
     print("Sentiment analysis feature will be disabled.")
 
+# Define the 8 core emotions based on Plutchik's wheel
+CORE_EMOTIONS = [
+    "Joy", "Trust", "Fear", "Surprise",
+    "Sadness", "Disgust", "Anger", "Anticipation"
+]
+
+# Helper function to format data for RadarChart
+def format_data_for_radar(emotion_scores):
+    """Converts {'Emotion': score} dict to [{'emotion': Emotion, 'Sentiment': score}] list."""
+    # Ensure all core emotions are present, defaulting to 0 if missing
+    formatted = []
+    for emotion in CORE_EMOTIONS:
+        score = emotion_scores.get(emotion, 0) # Default to 0 if emotion not in scores
+        formatted.append({"emotion": emotion, "Sentiment": score})
+    return formatted
+
 logger = logging.getLogger(__name__)
 
 class RealtimeClient:
     """Client for interacting with the OpenAI Realtime API via WebSocket."""
-    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False):
+    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None):
         # WebSocket Configuration
         self.url = "wss://api.openai.com/v1/realtime"
         self.model = "gpt-4o-mini-realtime-preview-2024-12-17"
@@ -71,11 +96,14 @@ class RealtimeClient:
         # --- Sentiment Analysis Setup ---
         self.google_api_key = google_api_key
         self.enable_sentiment_analysis = enable_sentiment_analysis and SentimentAnalysisProcess is not None
-        self.sentiment_model_name = "models/gemini-2.0-flash" # Or your preferred Gemini model
+        self.sentiment_model_name = "models/gemini-2.0-flash" 
         self.audio_mp_queue = None
         self.sentiment_history_list = None
         self.sentiment_process = None
         self.manager = None
+        self.sentiment_update_thread = None
+        self.sentiment_stop_event = threading.Event()
+        self.shared_emotion_scores = shared_emotion_scores
 
         if self.enable_sentiment_analysis:
             if not self.google_api_key:
@@ -171,8 +199,8 @@ class RealtimeClient:
                 logger.info("Starting sentiment analysis process...")
                 try:
                     # Ensure components are valid before starting
-                    if not self.google_api_key or not self.audio_mp_queue or self.sentiment_history_list is None or not SentimentAnalysisProcess:
-                         raise ValueError("Missing required components for sentiment analysis.")
+                    if not self.google_api_key or not self.audio_mp_queue or self.sentiment_history_list is None or not SentimentAnalysisProcess or self.shared_emotion_scores is None:
+                         raise ValueError("Missing required components for sentiment analysis or shared dict.")
 
                     self.sentiment_process = SentimentAnalysisProcess(
                         api_key=self.google_api_key,
@@ -182,8 +210,17 @@ class RealtimeClient:
                     )
                     self.sentiment_process.start()
                     logger.info("Sentiment analysis process started successfully.")
+
+                    # Start the sentiment update thread
+                    self.sentiment_stop_event.clear()
+                    self.sentiment_update_thread = threading.Thread(
+                        target=self._continuously_update_sentiment, daemon=True
+                    )
+                    self.sentiment_update_thread.start()
+                    logger.info("Sentiment update thread started.")
+
                 except Exception as e:
-                    logger.error(f"Failed to start sentiment analysis process: {e}")
+                    logger.error(f"Failed to start sentiment analysis process or update thread: {e}")
                     # Ensure process is None if start fails, and disable for this run
                     self.sentiment_process = None
                     self.enable_sentiment_analysis = False # Disable if it fails to start
@@ -1207,6 +1244,15 @@ class RealtimeClient:
                      logger.info("Sentiment analysis process stopped.")
             except Exception as e:
                 logger.error(f"Error stopping sentiment analysis process: {e}")
+
+            # Stop the sentiment update thread
+            self.sentiment_stop_event.set()
+            if self.sentiment_update_thread and self.sentiment_update_thread.is_alive():
+                logger.info("Waiting for sentiment update thread to stop...")
+                self.sentiment_update_thread.join(timeout=2)
+                if self.sentiment_update_thread.is_alive():
+                     logger.warning("Sentiment update thread did not stop gracefully.")
+            # -------------------------------------------
         # ------------------------------------------
 
         # --- Shutdown multiprocessing manager ---
@@ -1230,18 +1276,113 @@ class RealtimeClient:
             self.audio_handler.stop_playback()
             print("\nResponse interrupted.")
 
+    def _continuously_update_sentiment(self):
+        """Runs in a separate thread to periodically check for new sentiment results and update the shared dict."""
+        last_processed_index = -1
+        print("[Sentiment Updater] Thread started.")
+        while not self.sentiment_stop_event.is_set():
+            try:
+                # Access shared list carefully
+                if self.sentiment_history_list is not None and self.shared_emotion_scores is not None:
+                    current_len = len(self.sentiment_history_list)
+                    if current_len > last_processed_index + 1:
+                        # Process new items
+                        new_results = self.sentiment_history_list[last_processed_index + 1:]
+                        # print(f"[Sentiment Updater] Found {len(new_results)} new sentiment results.") # Debug
+                        for result in new_results:
+                            if isinstance(result, dict) and 'emotion_scores' in result:
+                                latest_scores = result['emotion_scores']
+                                # Update the shared dictionary atomically (Manager.dict handles this)
+                                self.shared_emotion_scores.update(latest_scores)
+                                # print(f"[Sentiment Updater] Updated shared scores: {dict(self.shared_emotion_scores)}") # Debug
+                        last_processed_index = current_len - 1
+
+                # Sleep for a short duration
+                time.sleep(0.5) # Check twice per second
+
+            except Exception as e:
+                 print(f"[Sentiment Updater] Error in update loop: {e}")
+                 traceback.print_exc() # Use traceback for full error details
+                 # Avoid tight loop on error
+                 time.sleep(2)
+
+        print("[Sentiment Updater] Thread stopped.")
+
+# --- Dash App Setup ---
+# Define the Dash app globally so it can be accessed by the callback
+app = dash.Dash(__name__)
+
+# Initial empty data for the chart
+initial_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+initial_radar_data = format_data_for_radar(initial_scores)
+
+# Define the layout
+app.layout = dmc.MantineProvider(
+    theme={"colorScheme": "light"},
+    withGlobalClasses=True,
+    children=[
+        html.Div([
+            dmc.Title("Real-time Emotion Analysis", order=2, ta="center"),
+            dmc.Text("(Based on User Input Audio)", ta="center", size="sm", c="dimmed"),
+            dmc.Space(h=20),
+            dmc.RadarChart(
+                id="emotion-radar-chart",
+                h=450, # Height of the chart
+                data=initial_radar_data, # Initial data
+                dataKey="emotion", # Key in data dictionaries for axis labels
+                withPolarGrid=True,
+                withPolarAngleAxis=True,
+                withPolarRadiusAxis=True,
+                polarRadiusAxisProps={"domain": [0, 3], "tickCount": 4}, # Renamed radiusAxisProps
+                series=[
+                    # Define the data series to plot
+                    {"name": "Sentiment", "color": "indigo.6", "opacity": 0.7}
+                ],
+            ),
+            dcc.Interval(
+                id='interval-component',
+                interval=500, # Update every 0.5 seconds (500 milliseconds)
+                n_intervals=0
+            )
+        ], style={"maxWidth": "600px", "margin": "auto", "padding": "20px"})
+    ]
+)
+
+# Define the callback to update the chart (needs access to shared_emotion_scores)
+# We will pass the shared dictionary to this function within main
+def setup_callbacks(shared_scores):
+    @app.callback(
+        Output('emotion-radar-chart', 'data'),
+        Input('interval-component', 'n_intervals')
+    )
+    def update_radar_chart(n):
+        """Reads from the shared dictionary and updates the chart data."""
+        if shared_scores is not None:
+            # Read the current scores (convert Manager.dict to regular dict)
+            current_scores = dict(shared_scores)
+            # Format the data for the radar chart
+            new_radar_data = format_data_for_radar(current_scores)
+            # print(f"[Dash Callback] Updating chart with data: {new_radar_data}") # Debug
+            return new_radar_data
+        else:
+            # Return empty data or default if shared_scores not available
+            return format_data_for_radar({emotion: 0 for emotion in CORE_EMOTIONS})
+# --- End Dash App Setup ---
 
 async def main():
     # Load API keys from file
     openai_api_key = None
     gemini_api_key = None
+    api_key_path = '.api_key.json' # Default path
     try:
         # Look for the key file in the parent directory relative to this script
         script_dir = os.path.dirname(__file__)
-        api_key_path = os.path.join(script_dir, '..', '.api_key.json')
-        if not os.path.exists(api_key_path):
-             # Fallback: check current directory (if running from project root)
-             api_key_path = '.api_key.json'
+        potential_path = os.path.join(script_dir, '..', '.api_key.json')
+        if os.path.exists(potential_path):
+             api_key_path = potential_path
+        elif not os.path.exists(api_key_path): # Check default only if parent doesn't exist
+             logger.error(f"API key file not found at {os.path.abspath(potential_path)} or {os.path.abspath(api_key_path)}")
+             return
 
         logger.info(f"Attempting to load API keys from: {os.path.abspath(api_key_path)}")
 
@@ -1273,28 +1414,116 @@ async def main():
     else:
         logger.info("Gemini API key not found. Sentiment analysis disabled.")
 
-    # Create client
+    # --- Multiprocessing and Shared Data Setup ---
+    manager = None
+    shared_emotion_scores = None
+    if enable_sentiment:
+        try:
+            manager = multiprocessing.Manager()
+            # Initialize shared dict with default scores
+            shared_emotion_scores = manager.dict({emotion: 0 for emotion in CORE_EMOTIONS})
+            logger.info("Multiprocessing manager and shared emotion dictionary initialized.")
+        except Exception as e:
+            logger.error(f"Failed to initialize multiprocessing manager or shared dict: {e}")
+            logger.warning("Disabling sentiment analysis due to manager initialization failure.")
+            enable_sentiment = False # Disable if manager fails
+            # Ensure cleanup if partially initialized
+            if manager: 
+                try: manager.shutdown() 
+                except Exception: pass
+            manager = None
+            shared_emotion_scores = None
+    # ---------------------------------------------
+
+    # Create client, passing the shared dictionary if sentiment analysis is enabled
     client = RealtimeClient(
         api_key=openai_api_key,
         google_api_key=gemini_api_key,
-        enable_sentiment_analysis=enable_sentiment
+        enable_sentiment_analysis=enable_sentiment, # Use potentially updated value
+        shared_emotion_scores=shared_emotion_scores # Pass the shared dict (or None)
     )
 
+    # Setup Dash callbacks, passing the shared dictionary
+    if enable_sentiment:
+        setup_callbacks(shared_emotion_scores)
+    else:
+        # If sentiment is disabled, setup callbacks with None
+        # The callback will just show default 0 values
+        setup_callbacks(None)
+        logger.info("Dash callbacks set up with default data (sentiment analysis disabled).")
+
+    # --- Threading Setup for Client ---
+    client_thread = None
+    client_stop_event = asyncio.Event() # Use asyncio event if needed within async context, though cleanup is handled internally
+
+    async def run_client_async():
+        nonlocal client
+        try:
+            await client.run()
+        except Exception as e:
+             logger.error(f"Error in RealtimeClient run: {e}")
+             traceback.print_exc()
+        finally:
+            logger.info("RealtimeClient run has completed or exited.")
+            # Signal main thread or handle cleanup if necessary
+            # Note: client.cleanup() is called within client.run()'s finally block
+
+    # Start the client in a separate thread
+    # Running an async function in a thread requires care.
+    # We need an event loop in that thread.
+    def start_client_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_client_async())
+        finally:
+            loop.close()
+            logger.info("Client thread event loop closed.")
+
+    client_thread = threading.Thread(target=start_client_thread, daemon=True)
+    client_thread.start()
+    logger.info("RealtimeClient started in a background thread.")
+    # -----------------------------------
+
+    # --- Run Dash App --- #
+    # Run Dash in the main thread. It will block here.
+    print("Starting Dash server for Emotion Radar Chart...")
+    print("Access the chart at: http://127.0.0.1:8050/")
     try:
-        await client.run()
+        # Host 0.0.0.0 makes it accessible on the network
+        app.run(debug=False, host='0.0.0.0', port=8050)
+    except KeyboardInterrupt:
+        logger.info("Dash server interrupted by user (Ctrl+C).")
     except Exception as e:
-        logger.error(f"Error in main: {e}")
+        logger.error(f"Error running Dash server: {e}")
+        traceback.print_exc()
     finally:
-        logger.info("Exiting application")
+        logger.info("Dash server shutting down.")
+        # Signal the client thread to stop (client.run handles internal cleanup)
+        # The client's cleanup should already be triggered by its own shutdown logic
+        # or when the main program exits (due to daemon thread).
+        # Ensure manager is shutdown if it was created
+        if manager:
+            logger.info("Attempting to shut down multiprocessing manager...")
+            try:
+                manager.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down multiprocessing manager: {e}")
+
+        # Wait briefly for the client thread to finish its cleanup if needed
+        if client_thread and client_thread.is_alive():
+             logger.info("Waiting briefly for client thread cleanup...")
+             client_thread.join(timeout=5)
+             if client_thread.is_alive():
+                 logger.warning("Client thread did not exit after Dash shutdown.")
+
+        logger.info("Exiting application main function.")
+    # ------------------ #
 
 
 if __name__ == "__main__":
     # Setup basic logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    # Suppress noisy logs from websockets library if desired
-    # logging.getLogger('websockets.client').setLevel(logging.WARNING)
-
-    # Add this import for path manipulation in main()
-    import os
+    logging.getLogger('websockets.client').setLevel(logging.WARNING)
 
     asyncio.run(main()) 
