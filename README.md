@@ -23,7 +23,7 @@ python initial_setup.py
 
 ## Features
 
-- AI-powered conversations using Google's Gemini models
+- AI-powered conversations using OpenAI's GPT and Google's Gemini models
 - Emotion detection and realtime emotion analysis
 - Natural language understanding
 
