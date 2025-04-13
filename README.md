@@ -8,7 +8,8 @@ A conversational agent with emotional intelligence using Google's Gemini API.
 2. Create a `.api_key.json` file with your Gemini API key:
 ```json
 {
-  "api_key": "YOUR_API_KEY_HERE"
+  "gemini_api_key": "YOUR_GEMINI_API_KEY_HERE",
+  "openai_api_key": "YOUR_OPENAI_API__KEY_HERE"
 }
 ```
 3. Install dependencies:
@@ -29,7 +30,8 @@ python initial_setup.py
 ## Technologies
 
 - Python
-- Google Gemini API
+- OpenAI real-time API for real-time audio conversations
+- Google Gemini API and Google ADK for sentiment analysis and report generation
 
 ## Running the Application
 
