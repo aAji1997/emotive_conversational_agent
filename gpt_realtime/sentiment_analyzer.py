@@ -50,7 +50,7 @@ class SentimentAnalysisProcess(multiprocessing.Process):
         self.sentiment_client = None # Initialize client later in run()
 
     def run(self):
-        """Main process function: configures Gemini, listens to the queue, and processes audio."""
+        """Main process function: configures Gemini, listens to the queue, and processes audio or text."""
         print("[Sentiment Process] Starting...")
 
         # Configure GenAI client within the process
@@ -77,14 +77,28 @@ class SentimentAnalysisProcess(multiprocessing.Process):
             try:
                 while len(audio_buffer) < max_buffer_chunks: # Prevent unbounded buffer growth
                     # Use timeout to allow checking exit flag periodically
-                    audio_chunk = self.audio_queue.get(timeout=0.1)
-                    audio_buffer.append(audio_chunk)
+                    chunk = self.audio_queue.get(timeout=0.1)
+
+                    # Check if this is a text chunk
+                    if 'text' in chunk:
+                        # Process text directly
+                        analysis_thread = threading.Thread(
+                            target=self._analyze_text_sentiment_thread,
+                            args=(chunk,),
+                            daemon=True
+                        )
+                        analysis_thread.start()
+                        collected_new_chunks = True
+                        continue  # Skip adding to audio buffer
+
+                    # Otherwise, treat as audio chunk
+                    audio_buffer.append(chunk)
                     collected_new_chunks = True
             except queue.Empty:
                 # No more data available right now
                 pass
             except Exception as e:
-                 print(f"[Sentiment Process] WARNING: Error getting audio chunk from queue: {e}")
+                 print(f"[Sentiment Process] WARNING: Error getting chunk from queue: {e}")
                  # Optional: add a small sleep to prevent tight loop on persistent errors
                  time.sleep(0.1)
 
@@ -139,6 +153,99 @@ class SentimentAnalysisProcess(multiprocessing.Process):
 
         print("[Sentiment Process] Stopped.")
 
+
+    def _analyze_text_sentiment_thread(self, text_chunk):
+        """
+        Internal method performing sentiment analysis on text input.
+        Runs in a thread within the SentimentAnalysisProcess.
+
+        Args:
+            text_chunk (dict): Dictionary containing 'text', 'source', and 'timestamp'
+        """
+        if not text_chunk or 'text' not in text_chunk:
+            print("[Sentiment Analysis] ERROR: Invalid text chunk received")
+            return
+
+        text = text_chunk['text']
+        source = text_chunk.get('source', 'unknown')
+        timestamp = text_chunk.get('timestamp', time.time())
+
+        try:
+            # Define the prompt for text sentiment analysis
+            prompt = """Analyze the emotional state expressed in this text based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
+
+For each core emotion, provide a score from 0 to 3 indicating its intensity in the text:
+- 0: Emotion is absent.
+- 1: Low intensity (e.g., Serenity for Joy, Apprehension for Fear).
+- 2: Medium intensity (e.g., Joy for Joy, Fear for Fear).
+- 3: High intensity (e.g., Ecstasy for Joy, Terror for Fear).
+
+Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its integer score (0, 1, 2, or 3). Example format:
+{"Joy": 0, "Trust": 1, "Fear": 0, "Surprise": 2, "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 1}"""
+
+            # Call the Gemini model
+            response = self.sentiment_client.models.generate_content(
+                model=self.sentiment_model_name,
+                contents=[prompt, text]
+            )
+
+            raw_response_text = response.text.strip()
+            print(f"[Sentiment Analysis] Raw text response: '{raw_response_text}'")
+
+            # Parse the response
+            emotion_scores = {
+                "Joy": 0, "Trust": 0, "Fear": 0, "Surprise": 0,
+                "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 0
+            }
+
+            # Clean and parse the JSON response
+            cleaned_text = raw_response_text
+            # Remove any markdown code block markers
+            if cleaned_text.startswith('```') and cleaned_text.endswith('```'):
+                cleaned_text = cleaned_text[3:-3].strip()
+            # Remove any language identifier after the first code block marker
+            if cleaned_text.startswith('```'):
+                cleaned_text = '```'.join(cleaned_text.split('```')[1:]).strip()
+            # Remove 'json' if it appears at the start
+            if cleaned_text.startswith('json'):
+                cleaned_text = cleaned_text[4:].strip()
+
+            try:
+                # Attempt to parse the cleaned JSON response
+                parsed_json = json.loads(cleaned_text)
+                if isinstance(parsed_json, dict):
+                    # Validate and update scores, keeping defaults for missing/invalid keys
+                    for emotion in emotion_scores.keys():
+                        if emotion in parsed_json and isinstance(parsed_json[emotion], int) and 0 <= parsed_json[emotion] <= 3:
+                            emotion_scores[emotion] = parsed_json[emotion]
+                else:
+                    print(f"[Sentiment Analysis] WARNING: Parsed JSON is not a dictionary: '{cleaned_text}'. Using default scores.")
+            except json.JSONDecodeError:
+                # Handle cases where the response is not valid JSON
+                if cleaned_text: # Only warn if the response wasn't empty
+                    print(f"[Sentiment Analysis] WARNING: Failed to decode JSON response: '{cleaned_text}'. Using default scores.")
+
+            # Store the result
+            result = {
+                "timestamp": timestamp,
+                "emotion_scores": emotion_scores,
+                "raw_response": raw_response_text,
+                "source": source,
+                "text": text[:100] + "..." if len(text) > 100 else text  # Store truncated text for reference
+            }
+            self.sentiment_history.append(result)
+
+            print(f"[Sentiment Analysis] Text Result Scores for {source}: {emotion_scores}")
+
+        except Exception as e:
+            print(f"[Sentiment Analysis] ERROR analyzing text: {e}")
+            error_result = {
+                "timestamp": timestamp,
+                "error": str(e),
+                "source": source,
+                "traceback": traceback.format_exc()
+            }
+            self.sentiment_history.append(error_result)
 
     def _analyze_audio_sentiment_thread(self, user_chunks):
         """
@@ -357,7 +464,7 @@ if __name__ == '__main__':
 
     # Use the same model name as in gemini_live_audio.py
     SENTIMENT_MODEL = "models/gemini-2.0-flash"
-    
+
     print(f"Using sentiment model: {SENTIMENT_MODEL}")
 
 
@@ -472,4 +579,4 @@ if __name__ == '__main__':
                 scores_str = ", ".join([f"{k}: {v}" for k, v in scores.items()])
                 print(f"[{ts}] Scores: [{scores_str}], Duration: {duration:.1f}s, Raw: '{raw}'")
 
-    print("\nTest finished.") 
+    print("\nTest finished.")

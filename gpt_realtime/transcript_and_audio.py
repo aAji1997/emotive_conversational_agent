@@ -19,7 +19,7 @@ class AudioHandler:
         self.channels = 1  # Mono audio
         self.rate = 24000  # Sampling rate in Hz
         self.is_recording = False
-        
+
         # Lock for audio playback to avoid overlapping audio
         self.playback_lock = threading.Lock()
         self.currently_playing = False
@@ -88,17 +88,17 @@ class AudioHandler:
         if not audio_data or len(audio_data) == 0:
             logger.warning("No audio data provided to play")
             return
-            
+
         # Check if already playing
         if self.currently_playing:
             logger.warning("Already playing audio, cancelling new playback")
             return
-            
+
         def play():
             # Set a flag to indicate we're playing audio
             with self.playback_lock:
                 self.currently_playing = True
-                
+
             try:
                 stream = self.p.open(
                     format=self.format,
@@ -119,13 +119,13 @@ class AudioHandler:
                 # Clear the playing flag when done
                 with self.playback_lock:
                     self.currently_playing = False
-                    
+
             # logger.debug("Audio playback complete")
 
         # Use daemon=True to ensure thread doesn't prevent program exit
         playback_thread = threading.Thread(target=play, daemon=True)
         playback_thread.start()
-        
+
     def stop_playback(self):
         """Stop any ongoing audio playback."""
         # Just set the flag to false - won't affect currently playing audio
@@ -145,12 +145,12 @@ class TranscriptProcessor:
         self.current_transcript = ""
         self.transcript_lock = threading.Lock()
         self.full_conversation = []  # Store the entire conversation in memory
-        
+
         # Create transcripts directory if it doesn't exist
         self.transcripts_dir = Path("gpt_realtime/gpt_transcripts")
         self.transcripts_dir.mkdir(exist_ok=True)
         logger.info(f"Transcript directory set to: {self.transcripts_dir.absolute()}")
-        
+
         # Track if speech has been detected
         self.speech_detected = False
 
@@ -174,7 +174,7 @@ class TranscriptProcessor:
     def add_transcript_event(self, event):
         """Add a transcript event to the processing queue."""
         self.transcript_queue.put(event)
-        
+
     def add_speech_event(self, event_type):
         """Log speech started/stopped events to the transcript."""
         # Handle speech events
@@ -183,11 +183,11 @@ class TranscriptProcessor:
             with self.transcript_lock:
                 self.full_conversation.append("--- Speech detected ---")
             logger.info("Speech started event added to transcript")
-            
+
         elif event_type == "speech_stopped" and self.speech_detected:
             self.speech_detected = False
             with self.transcript_lock:
-                # Add a placeholder for user speech that will be replaced 
+                # Add a placeholder for user speech that will be replaced
                 # when the transcript comes in
                 last_entries = self.full_conversation[-3:] if len(self.full_conversation) >= 3 else []
                 if not any(entry.startswith("User:") for entry in last_entries):
@@ -201,28 +201,28 @@ class TranscriptProcessor:
         """Get the current transcript with thread safety."""
         with self.transcript_lock:
             return self.current_transcript
-            
+
     def clear_transcript(self):
         """Clear the current transcript when starting a new recording session."""
         with self.transcript_lock:
             self.current_transcript = ""
             # Reset speech detection
             self.speech_detected = False
-                
+
         logger.info("Transcript cleared for new recording session")
 
     def add_user_query(self, query_text):
         """Add a user's text query to the transcript."""
         if not query_text:
             return
-            
+
         with self.transcript_lock:
             # Add to the in-memory transcript
             if self.current_transcript:
                 self.current_transcript += f"\n\nUser: {query_text}"
             else:
                 self.current_transcript = f"User: {query_text}"
-                
+
             # Check if we need to replace a placeholder or add a new entry
             placeholder_replaced = False
             if self.full_conversation:
@@ -232,20 +232,38 @@ class TranscriptProcessor:
                         self.full_conversation[i] = f"User: {query_text}"
                         placeholder_replaced = True
                         break
-            
+
             # If no placeholder was found, add as a new entry
             if not placeholder_replaced:
                 self.full_conversation.append(f"User: {query_text}")
                 self.full_conversation.append("")  # Add blank line
-                
+
         logger.info(f"Added user query to transcript: {query_text[:30]}...")
+
+    def add_assistant_response(self, response_text):
+        """Add an assistant's text response to the transcript."""
+        if not response_text:
+            return
+
+        with self.transcript_lock:
+            # Add to the in-memory transcript
+            if self.current_transcript:
+                self.current_transcript += f"\n\nAssistant: {response_text}"
+            else:
+                self.current_transcript = f"Assistant: {response_text}"
+
+            # Add as a new entry
+            self.full_conversation.append(f"Assistant: {response_text}")
+            self.full_conversation.append("")  # Add blank line
+
+        logger.info(f"Added assistant response to transcript: {response_text[:30]}...")
 
     def save_transcript(self):
         """Save the complete transcript to a file at the end of the conversation."""
         if not self.full_conversation:
             logger.info("No transcript to save")
             return None
-            
+
         # Clean up any unresolved placeholders before saving
         cleaned_conversation = []
         for entry in self.full_conversation:
@@ -253,20 +271,20 @@ class TranscriptProcessor:
                 # Skip unresolved placeholders
                 continue
             cleaned_conversation.append(entry)
-            
+
         # Create a new file for this conversation
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = self.transcripts_dir / f"conversation_{timestamp}.txt"
-        
+
         try:
             with open(filename, 'w') as f:
                 f.write(f"Complete Conversation Transcript: {timestamp}\n")
                 f.write("-" * 50 + "\n\n")
-                
+
                 # Write all conversation lines
                 for line in cleaned_conversation:
                     f.write(f"{line}\n")
-                    
+
             logger.info(f"Complete transcript saved to: {filename}")
             return filename
         except Exception as e:
@@ -279,15 +297,15 @@ class TranscriptProcessor:
             try:
                 # Block for a short time to avoid busy waiting
                 event = self.transcript_queue.get(timeout=0.5)
-                
+
                 # Check for exit signal
                 if event is None:
                     break
-                    
+
                 event_type = event.get("type")
-                
+
                 # logger.debug(f"Processing event type: {event_type}")
-                
+
                 # Process different transcript event types
                 if event_type == "response.audio_transcript.delta":
                     delta = event.get("delta", "")
@@ -300,19 +318,19 @@ class TranscriptProcessor:
                                     self.current_transcript = f"Assistant: {delta}"
                                 else:
                                     self.current_transcript += f"\n\nAssistant: {delta}"
-                                    
+
                                 # For full conversation
                                 self.full_conversation.append(f"Assistant: {delta}")
                             else:
                                 # Continuation of assistant's response
                                 self.current_transcript += delta
-                                
+
                                 # Update the last line in full conversation
                                 if self.full_conversation and self.full_conversation[-1].startswith("Assistant:"):
                                     self.full_conversation[-1] += delta
-                        
+
                         # logger.debug(f"Transcript delta processed")
-                        
+
                 elif event_type == "response.audio_transcript.done":
                     transcript = event.get("transcript", "")
                     if transcript:
@@ -322,24 +340,24 @@ class TranscriptProcessor:
                                 self.current_transcript += f"\n\nAssistant: {transcript}"
                             else:
                                 self.current_transcript = f"Assistant: {transcript}"
-                                
+
                             # Append to full conversation
                             self.full_conversation.append(f"Assistant: {transcript}")
                             self.full_conversation.append("------------------------------")
                             self.full_conversation.append("")  # Add blank line
-                        
+
                         logger.info("Final transcript processed")
                         # logger.debug(f"Processing response.audio_transcript.done event with transcript: {transcript}")
                         # logger.debug(f"Updated full conversation with assistant response: {transcript}")
-                
+
                 # Mark task as done
                 self.transcript_queue.task_done()
-                
+
                 # logger.debug(f"Event processed: {event_type}")
-                
+
                 # logger.debug(f"Current transcript before processing: {self.current_transcript}")
                 # logger.debug(f"Current transcript after processing: {self.current_transcript}")
-                
+
             except queue.Empty:
                 # Queue timeout, continue looping
                 continue

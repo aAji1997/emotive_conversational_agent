@@ -13,6 +13,9 @@ import random
 import os
 import traceback
 
+# Import OpenAI for chat completions
+import openai
+
 # Dash / Plotting Imports
 import dash
 import dash_mantine_components as dmc
@@ -46,17 +49,21 @@ logger = logging.getLogger(__name__)
 
 class RealtimeClient:
     """Client for interacting with the OpenAI Realtime API via WebSocket."""
-    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None):
+    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio"):
         # WebSocket Configuration
         self.url = "wss://api.openai.com/v1/realtime"
         self.model = "gpt-4o-mini-realtime-preview-2024-12-17"
+        self.chat_model = "gpt-4o"  # Model for chat completions
         self.api_key = api_key # OpenAI API Key
         self.voice = voice
         self.ws = None
         self.audio_handler = AudioHandler()
-        
+
+        # Initialize OpenAI client for chat completions
+        self.openai_client = openai.OpenAI(api_key=api_key)
+
         self.audio_buffer = b''  # Buffer for streaming audio responses
-        
+
         # Add flag to track if assistant is currently responding
         self.is_responding = False
         self.response_complete_event = asyncio.Event()
@@ -64,9 +71,15 @@ class RealtimeClient:
 
         # Create transcript processor
         self.transcript_processor = TranscriptProcessor()
-        
+
         # Flag to track if we received a transcript for current audio session
         self.received_transcript = False
+
+        # Conversation mode: "audio" or "chat"
+        self.conversation_mode = conversation_mode
+
+        # Chat history for text-based conversations
+        self.chat_history = []
 
         # Server-side VAD configuration
         self.VAD_turn_detection = True
@@ -96,7 +109,7 @@ class RealtimeClient:
         # --- Sentiment Analysis Setup ---
         self.google_api_key = google_api_key
         self.enable_sentiment_analysis = enable_sentiment_analysis and SentimentAnalysisProcess is not None
-        self.sentiment_model_name = "models/gemini-2.0-flash" 
+        self.sentiment_model_name = "models/gemini-2.0-flash"
         self.audio_mp_queue = None
         self.sentiment_history_list = None
         self.sentiment_process = None
@@ -132,10 +145,10 @@ class RealtimeClient:
     async def connect(self):
         """Connect to the WebSocket server."""
         # logger.info(f"Connecting to WebSocket: {self.url}")
-        
+
         # Start the transcript processor
         self.transcript_processor.start()
-        
+
         # Reset WebSocket connection if it exists
         if self.ws:
             try:
@@ -143,17 +156,17 @@ class RealtimeClient:
             except:
                 pass
             self.ws = None
-            
+
         try:
             # Create the URL with the model parameter in the query string
             full_url = f"{self.url}?model={self.model}"
-            
+
             # Prepare headers dictionary
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "OpenAI-Beta": "realtime=v1"
             }
-            
+
             # Connect to the WebSocket
             try:
                 self.ws = await websockets.connect(
@@ -165,7 +178,7 @@ class RealtimeClient:
             except Exception as e:
                 logger.error(f"WebSocket connection failed: {e}")
                 return False
-                
+
             # logger.info("Successfully connected to OpenAI Realtime API")
 
             # Configure session
@@ -229,7 +242,7 @@ class RealtimeClient:
             # Make sure we're not already in responding state
             self.is_responding = False
             self.response_complete_event.set()
-            
+
             # Send initial response.create - but only if we're not already in a response
             try:
                 self.is_responding = True
@@ -239,9 +252,9 @@ class RealtimeClient:
                 logger.error(f"Failed to send initial response.create: {e}")
                 await self.cleanup()
                 return False
-                
+
             return True
-                        
+
         except Exception as e:
             logger.error(f"Failed to connect: {e}")
             logger.error(f"Connection error details: {str(e)}")
@@ -280,10 +293,14 @@ class RealtimeClient:
 
     async def receive_events(self):
         """Continuously receive events from the WebSocket server."""
+        # In chat mode, we don't need to receive events from the WebSocket
+        if self.conversation_mode == "chat":
+            return
+
         if not self.ws:
             logger.error("Cannot receive events: WebSocket is not connected")
             return
-            
+
         try:
             # Use async for with the WebSocket connection
             async for message in self.ws:
@@ -299,7 +316,7 @@ class RealtimeClient:
             logger.error(f"WebSocket connection error: {e}")
             import traceback
             logger.error(traceback.format_exc())
-            
+
             # Update the connection status
             self.ws = None
 
@@ -314,10 +331,10 @@ class RealtimeClient:
         if event_type.startswith("input_audio_transcript") or event_type == "conversation.item.input_audio_transcription.completed":
             # logger.info(f"Speech transcript event: {event_type}")
             # logger.debug(f"Event data: {event}")
-            
+
             # Flag that we received a transcript
             self.received_transcript = True
-            
+
             # For conversation.item.input_audio_transcription.completed events
             if event_type == "conversation.item.input_audio_transcription.completed":
                 transcript = None
@@ -331,7 +348,7 @@ class RealtimeClient:
                             if content.get("type") == "input_audio" and "transcript" in content:
                                 transcript = content.get("transcript", "")
                                 break
-                
+
                 if transcript:
                     print(f"\nTranscribed: {transcript}")
                     # Add to transcript
@@ -342,33 +359,42 @@ class RealtimeClient:
             error_msg = event.get('error', {}).get('message', 'Unknown error')
             logger.error(f"Error event received: {error_msg}")
             print(f"\nError from API: {error_msg}")
-            
+
             # Reset response state in case of errors
             if self.is_responding:
                 self.reset_audio_state()
-            
+
         # Handle response cancellation events
         elif event_type == "response.cancelled":
             # logger.info("Response was cancelled")
             print("\nResponse cancelled.")
             self.reset_audio_state()
-            
+
         elif event_type == "response.text.delta":
             # Print text response incrementally
             if "delta" in event:
-                print(event["delta"], end="", flush=True)
-                
+                delta_text = event["delta"]
+                print(delta_text, end="", flush=True)
+
+                # In chat mode, collect the response text
+                if self.conversation_mode == "chat":
+                    # Initialize response text if this is the first delta
+                    if not hasattr(self, "current_response_text"):
+                        self.current_response_text = ""
+                    # Append the delta text
+                    self.current_response_text += delta_text
+
         elif event_type == "response.audio.delta":
             # Set responding flag if we receive audio
             if not self.is_responding:
                 self.is_responding = True
                 self.response_complete_event.clear()
-                
+
             # Append audio data to buffer
             audio_data = base64.b64decode(event.get("delta", ""))
             if audio_data:
                 self.audio_buffer += audio_data
-                
+
         # Handle user speech transcript events
         elif event_type == "input_audio_transcript.partial":
             # Handle partial transcript (doesn't need to be saved, just show progress)
@@ -376,7 +402,7 @@ class RealtimeClient:
                 transcript = event.get("transcript", "")
                 if transcript:
                     print(f"\rRecognizing: {transcript}", end="", flush=True)
-                    
+
         elif event_type == "input_audio_transcript.final":
             # Handle final transcript of user speech
             if "transcript" in event:
@@ -385,7 +411,7 @@ class RealtimeClient:
                     print(f"\nYou said: {transcript}")
                     # Add to transcript
                     self.transcript_processor.add_user_query(transcript)
-        
+
         # Handle conversation item input audio transcription events
         elif event_type == "conversation.item.input_audio_transcription.completed":
             if "item" in event and "content" in event["item"]:
@@ -396,7 +422,7 @@ class RealtimeClient:
                             print(f"\nTranscribed: {transcript}")
                             # Add to transcript
                             self.transcript_processor.add_user_query(transcript)
-        
+
         elif event_type == "response.audio.done":
             # Play the complete audio response
             if self.audio_buffer:
@@ -420,7 +446,7 @@ class RealtimeClient:
 
                 self.audio_handler.play_audio(self.audio_buffer)
                 self.audio_buffer = b'' # Clear buffer AFTER sending and playing
-                
+
             # Final check to play any buffered audio that wasn't caught by response.audio.done
             if self.audio_buffer:
                 # logger.info(f"Playing remaining buffered audio ({len(self.audio_buffer)} bytes)")
@@ -443,8 +469,23 @@ class RealtimeClient:
 
                 self.audio_handler.play_audio(self.audio_buffer)
                 self.audio_buffer = b'' # Clear buffer AFTER sending and playing
-            
-            print("Saving transcript and exiting...")
+
+            # Handle chat mode response completion
+            if self.conversation_mode == "chat" and hasattr(self, "current_response_text"):
+                # Add the complete response to chat history
+                self.chat_history.append({"role": "assistant", "content": self.current_response_text})
+
+                # Process the response text for sentiment analysis
+                if self.enable_sentiment_analysis:
+                    asyncio.create_task(self._process_text_for_sentiment(self.current_response_text, "model"))
+
+                # Add to transcript
+                self.transcript_processor.add_assistant_response(self.current_response_text)
+
+                # Reset the current response text
+                self.current_response_text = ""
+
+            print("Saving transcript...")
             transcript_file = self.transcript_processor.save_transcript()
             if transcript_file:
                 print(f"Complete transcript saved to: {transcript_file}")
@@ -481,7 +522,7 @@ class RealtimeClient:
             self.is_responding = False
             self.response_complete_event.set()
             print("\nResponse complete. You can speak again or type a command.")
-            
+
         # Handle WebRTC/Realtime API voice activity events
         elif event_type == "input_audio_buffer.speech_started":
             # logger.info("Speech started detected by server VAD")
@@ -489,16 +530,16 @@ class RealtimeClient:
             # If we're currently responding and speech is detected, reset audio state
             if self.is_responding and self.VAD_config.get("interrupt_response", False):
                 self.reset_audio_state()
-                
+
             # Add to transcript
             self.transcript_processor.add_speech_event("speech_started")
-            
+
         elif event_type == "input_audio_buffer.speech_stopped":
             # logger.info("Speech stopped detected by server VAD")
             print("\nSpeech ended, processing ...")
             # Add to transcript
             self.transcript_processor.add_speech_event("speech_stopped")
-            
+
         # Handle session events which can contain important connection info
         elif event_type in ["session.created", "session.updated"]:
             # logger.info(f"Session {event_type.split('.')[1]}: {event.get('session', {}).get('id', 'unknown')}")
@@ -506,18 +547,18 @@ class RealtimeClient:
             if 'session' in event and 'turn_detection' in event['session']:
                 turn_detection = event['session']['turn_detection']
                 # logger.info(f"Turn detection settings: {turn_detection}")
-                
+
         # Route transcript events to the separate processor
         elif event_type.startswith("response.audio_transcript"):
             # Send to transcript processor thread instead of handling here
             self.transcript_processor.add_transcript_event(event)
-                
+
         # Handle rate limits updates
         elif event_type == "rate_limits.updated":
             rate_limits = event.get("rate_limits", [])
             for limit in rate_limits:
                 logger.info(f"Rate limit: {limit.get('type')} - {limit.get('bucket')}: {limit.get('remaining')} remaining, resets in {limit.get('reset_seconds')} seconds")
-                
+
         # Check if we need to keep recording or stop
         if event_type in ["input_audio_buffer.speech_stopped", "response.done"]:
             # These events indicate the server has detected the end of speech
@@ -526,9 +567,15 @@ class RealtimeClient:
             pass
 
     async def send_text(self, text):
-        """Send a text message to the WebSocket server."""
+        """Send a text message to the appropriate API based on conversation mode."""
         # logger.info(f"Sending text message: {text}")
-        
+
+        # If in chat mode, use the chat completions API
+        if self.conversation_mode == "chat":
+            await self.send_chat_message(text)
+            return
+
+        # For audio mode, continue with the realtime API
         # Wait for any current response to complete
         if self.is_responding:
             print("Assistant is still responding. Do you want to interrupt? (y/n)")
@@ -547,10 +594,10 @@ class RealtimeClient:
                 logger.error(f"Error getting interruption choice: {e}")
                 # Default to waiting if we can't get input
                 await self.response_complete_event.wait()
-        
+
         # Add the text query to the transcript
         self.transcript_processor.add_user_query(text)
-        
+
         await self.send_event({
             "type": "conversation.item.create",
             "item": {
@@ -562,27 +609,127 @@ class RealtimeClient:
                 }]
             }
         })
-        
+
         # Make sure we're not in responding state
         if not self.is_responding:
             # Set responding state before creating response
             self.is_responding = True
             self.response_complete_event.clear()
-            
+
             await self.send_event({"type": "response.create"})
         else:
             logger.warning("Not sending response.create as another response is in progress")
-            
+
+    async def _process_text_for_sentiment(self, text, source):
+        """Process text for sentiment analysis.
+
+        Args:
+            text (str): The text to analyze
+            source (str): Either 'user' or 'model'
+        """
+        if not self.enable_sentiment_analysis or not self.audio_mp_queue:
+            return
+
+        try:
+            # Create a text-based sentiment analysis request
+            text_sentiment_request = {
+                "source": source,
+                "text": text,
+                "timestamp": time.time()
+            }
+
+            # Send to the sentiment analysis queue
+            self.audio_mp_queue.put_nowait(text_sentiment_request)
+            logger.info(f"Sent {source} text for sentiment analysis: {text[:30]}...")
+        except queue.Full:
+            logger.warning("Sentiment analysis queue is full. Skipping text analysis.")
+        except Exception as e:
+            logger.error(f"Error sending text for sentiment analysis: {e}")
+
+    async def send_chat_message(self, text):
+        """Send a message using the chat completions API instead of the realtime API.
+
+        Args:
+            text (str): The text message to send
+        """
+        # Add the text query to the transcript
+        self.transcript_processor.add_user_query(text)
+
+        # Add to chat history
+        self.chat_history.append({"role": "user", "content": text})
+
+        # Send text for sentiment analysis if enabled
+        if self.enable_sentiment_analysis:
+            await self._process_text_for_sentiment(text, "user")
+
+        # Set responding state
+        self.is_responding = True
+        self.response_complete_event.clear()
+
+        try:
+            # Print user message
+            print(f"\nYou: {text}")
+
+            # Create messages for the API call
+            messages = []
+            for msg in self.chat_history:
+                messages.append({"role": msg["role"], "content": msg["content"]})
+
+            # Call the chat completions API
+            response = self.openai_client.chat.completions.create(
+                model=self.chat_model,
+                messages=messages,
+                temperature=0.7
+            )
+
+            # Get the response text
+            response_text = response.choices[0].message.content
+
+            # Print the response
+            print(f"\nAssistant: {response_text}")
+
+            # Add to chat history
+            self.chat_history.append({"role": "assistant", "content": response_text})
+
+            # Add to transcript
+            self.transcript_processor.add_assistant_response(response_text)
+
+            # Process for sentiment analysis
+            if self.enable_sentiment_analysis:
+                await self._process_text_for_sentiment(response_text, "model")
+
+            # Save transcript
+            print("\nSaving transcript...")
+            transcript_file = self.transcript_processor.save_transcript()
+            if transcript_file:
+                print(f"Complete transcript saved to: {transcript_file}")
+            else:
+                print("No transcript to save.")
+
+            # Print sentiment results if available
+            if self.enable_sentiment_analysis and hasattr(self, 'sentiment_process') and self.sentiment_process is not None:
+                print("\nSentiment analysis is enabled. Results will be shown in the emotion radar chart.")
+
+        except Exception as e:
+            logger.error(f"Error in chat completions: {e}")
+            print(f"\nError: {str(e)}")
+            traceback.print_exc()
+        finally:
+            # Reset responding state
+            self.is_responding = False
+            self.response_complete_event.set()
+            print("\nResponse complete. You can type another message or use a command.")
+
     async def send_audio(self):
         """Record and send audio using server-side turn detection."""
         # logger.info("Starting continuous listening mode...")
-        
+
         # Wait for any current response to complete - with a note about interruption
         if self.is_responding:
             print("Assistant is responding. You can continue to interrupt or wait...")
             print("Press Enter to interrupt the current response.")
             # We'll allow interruption through the wait_for_input function
-                        
+
         # If we're still in responding state but want to interrupt, cancel it
         if self.is_responding:
             try:
@@ -591,35 +738,35 @@ class RealtimeClient:
                 await asyncio.sleep(0.5)  # Brief pause
             except Exception as e:
                 logger.error(f"Error cancelling response: {e}")
-        
+
         print("You can now speak. Press Enter to stop listening mode or 'q' to quit.")
-        
+
         # Clear transcript from previous sessions
         self.transcript_processor.clear_transcript()
-        
+
         # Reset the transcript received flag for this audio session
         self.received_transcript = False
-        
+
         self.audio_handler.start_recording()
-        
+
         # For stopping conditions
         stop_recording = False
         quit_requested = False
         speech_detected = False
-        
+
         # Track if we received any transcripts
         received_transcript = [False]
-        
+
         # For transcript display
         transcript_display_task = None
-        
+
         async def wait_for_input():
             nonlocal stop_recording, quit_requested
             user_input = await asyncio.to_thread(input)
             if user_input.lower() == 'q':
                 quit_requested = True
             stop_recording = True
-        
+
         async def display_transcript_updates():
             """Periodically check for transcript updates (no longer displaying to console)."""
             last_transcript = ""
@@ -630,23 +777,23 @@ class RealtimeClient:
                     # Just update the last transcript without printing
                     last_transcript = current_transcript
                 await asyncio.sleep(0.5)  # Check every half second
-        
+
         try:
             # Start the input listener in the background
             enter_task = asyncio.create_task(wait_for_input())
-            
+
             # Start transcript display task
             transcript_display_task = asyncio.create_task(display_transcript_updates())
-            
+
             # Keep track of how long we've been recording
             start_time = time.time()
             last_chunk_time = start_time
             last_activity_time = start_time
             silent_chunks = 0
-            
+
             # Buffer for audio data if no transcript is received
             recorded_audio_data = b''
-            
+
             while not stop_recording and self.ws:
                 chunk = self.audio_handler.record_chunk()
                 if chunk:
@@ -673,19 +820,19 @@ class RealtimeClient:
                         # Check if the chunk has actual audio or just silence
                         audio_array = np.frombuffer(chunk, dtype=np.int16)
                         max_amp = np.max(np.abs(audio_array))
-                        
+
                         # Log audio levels less frequently to reduce console spam
                         current_time = time.time()
                         if current_time - last_chunk_time > 2.0:  # Log every 2 seconds
                             last_chunk_time = current_time
-                        
+
                         # Count silent chunks - useful for debugging
                         if max_amp < 100:
                             silent_chunks += 1
                         else:
                             silent_chunks = 0
                             last_activity_time = current_time
-                            
+
                         # Encode and send to the server as we go
                         base64_chunk = base64.b64encode(chunk).decode('utf-8')
                         await self.send_event({
@@ -730,12 +877,12 @@ class RealtimeClient:
                             break  # Exit loop on other errors
                 else:
                     await asyncio.sleep(0.1)
-                    
+
                 # Safety timeout - if recording for too long without stopping
                 if current_time - start_time > 300.0:  # 5 minute maximum
                     logger.warning("Recording timeout reached (5 minutes), stopping automatically")
                     stop_recording = True
-                
+
                 # Send periodic ping messages if no activity for more than 30 seconds
                 if current_time - last_activity_time > 30.0:
                     try:
@@ -749,7 +896,7 @@ class RealtimeClient:
                         last_activity_time = current_time
                     except Exception as e:
                         logger.error(f"Error sending keepalive: {e}")
-            
+
             # Cancel enter_task if it's still running
             if not enter_task.done():
                 enter_task.cancel()
@@ -757,7 +904,7 @@ class RealtimeClient:
                     await enter_task
                 except asyncio.CancelledError:
                     pass
-            
+
             # Cancel transcript display task
             if transcript_display_task and not transcript_display_task.done():
                 transcript_display_task.cancel()
@@ -765,16 +912,16 @@ class RealtimeClient:
                     await transcript_display_task
                 except asyncio.CancelledError:
                     pass
-                
+
             # logger.info(f"Audio recording finished after {time.time() - start_time:.1f} seconds")
-            
+
             # If we didn't receive any transcripts but have recorded audio,
             # add a placeholder in the transcript
             if not self.received_transcript and len(recorded_audio_data) > 1024:  # Make sure we have some meaningful audio
                 # Add a fallback entry indicating speech was recorded but not transcribed
                 self.transcript_processor.add_user_query("[Speech recorded but not transcribed]")
                 logger.warning("No transcript received from API, added placeholder")
-            
+
         except Exception as e:
             logger.error(f"Error during audio recording: {e}")
             import traceback
@@ -782,14 +929,14 @@ class RealtimeClient:
         finally:
             # Stop recording
             self.audio_handler.stop_recording()
-        
+
         # If using manual VAD, we need to commit
         if not self.VAD_turn_detection and self.ws:
             try:
                 await self.send_event({"type": "input_audio_buffer.commit"})
             except Exception as e:
                 logger.error(f"Error committing audio buffer: {e}")
-                
+
         # Always explicitly create a response if server-VAD didn't already do it
         try:
             if self.ws and not self.is_responding:
@@ -800,7 +947,7 @@ class RealtimeClient:
                 logger.warning("Not sending response.create as another response is in progress")
         except Exception as e:
             logger.error(f"Error sending response.create: {e}")
-        
+
         # Wait a moment for the server to process
         await asyncio.sleep(0.5)
         print("\nListening mode ended. Type a command to continue.")
@@ -811,7 +958,7 @@ class RealtimeClient:
     async def manual_record_audio(self):
         """Record audio with visual indicators and manually commit when done."""
         print("Starting manual recording mode...")
-        
+
         # Wait for any current response to complete
         if self.is_responding:
             print("Assistant is responding. Do you want to interrupt? (y/n)")
@@ -830,27 +977,27 @@ class RealtimeClient:
                 logger.error(f"Error getting interruption choice: {e}")
                 # Default to waiting if we can't get input
                 await self.response_complete_event.wait()
-        
+
         # Clear transcript from previous sessions
         self.transcript_processor.clear_transcript()
-        
+
         self.audio_handler.start_recording()
-        
+
         # For manual stopping
         stop_recording = False
         quit_requested = False
         recorded_data = b''
-        
+
         # For transcript display
         transcript_display_task = None
-        
+
         async def wait_for_input():
             nonlocal stop_recording, quit_requested
             user_input = await asyncio.to_thread(input)
             if user_input.lower() == 'q':
                 quit_requested = True
             stop_recording = True
-        
+
         async def display_transcript_updates():
             """Periodically check for transcript updates (no longer displaying to console)."""
             last_transcript = ""
@@ -861,18 +1008,18 @@ class RealtimeClient:
                     # Just update the last transcript without printing
                     last_transcript = current_transcript
                 await asyncio.sleep(0.5)  # Check every half second
-        
+
         try:
             # Start the input listener in the background
             enter_task = asyncio.create_task(wait_for_input())
-            
+
             # Start transcript display task
             transcript_display_task = asyncio.create_task(display_transcript_updates())
-            
+
             # Keep track of how long we've been recording
             start_time = time.time()
             last_level_time = start_time
-            
+
             while not stop_recording and self.ws:
                 chunk = self.audio_handler.record_chunk()
                 if chunk:
@@ -880,7 +1027,7 @@ class RealtimeClient:
                         # Analyze audio levels for visual feedback
                         audio_array = np.frombuffer(chunk, dtype=np.int16)
                         max_amp = np.max(np.abs(audio_array))
-                        
+
                         # Create a visual level meter
                         current_time = time.time()
                         if current_time - last_level_time > 0.1:  # Update 10 times per second
@@ -890,10 +1037,10 @@ class RealtimeClient:
                             # Use carriage return to update in place
                             print(f"\rAudio Level: {meter} {'Speaking!' if level > 3 else 'Silent'}", end="", flush=True)
                             last_level_time = current_time
-                        
+
                         # Add to our recorded buffer
                         recorded_data += chunk
-                        
+
                         # Encode and send to the server as we go
                         base64_chunk = base64.b64encode(chunk).decode('utf-8')
                         await self.send_event({
@@ -923,13 +1070,13 @@ class RealtimeClient:
                         break
                 else:
                     await asyncio.sleep(0.01)
-                    
+
                 # Safety timeout - if recording for too long (2 min)
                 if current_time - start_time > 120.0:
                     logger.warning("Manual recording timeout reached (2 minutes)")
                     print("\nRecording timeout reached. Stopping automatically.")
                     stop_recording = True
-            
+
             # Cancel enter_task if it's still running
             if not enter_task.done():
                 enter_task.cancel()
@@ -937,7 +1084,7 @@ class RealtimeClient:
                     await enter_task
                 except asyncio.CancelledError:
                     pass
-            
+
             # Cancel transcript display task
             if transcript_display_task and not transcript_display_task.done():
                 transcript_display_task.cancel()
@@ -945,14 +1092,14 @@ class RealtimeClient:
                     await transcript_display_task
                 except asyncio.CancelledError:
                     pass
-            
+
             print("\nRecording complete, sending to server...")
-            
+
             # Explicitly commit the audio buffer
             if self.ws and len(recorded_data) > 0:
                 # Commit the audio buffer regardless of VAD setting
                 await self.send_event({"type": "input_audio_buffer.commit"})
-                
+
                 # Create a response if not already responding
                 if not self.is_responding:
                     self.is_responding = True
@@ -960,13 +1107,13 @@ class RealtimeClient:
                     await self.send_event({"type": "response.create"})
                 else:
                     logger.warning("Not sending response.create as another response is in progress")
-                
+
                 bytes_recorded = len(recorded_data)
                 duration_ms = bytes_recorded / 2 / self.audio_handler.rate * 1000
                 print(f"Sent {bytes_recorded} bytes ({duration_ms:.1f} ms) of audio to the server.")
             else:
                 print("No audio recorded or connection lost.")
-            
+
         except Exception as e:
             logger.error(f"Error during manual recording: {e}")
             import traceback
@@ -976,37 +1123,52 @@ class RealtimeClient:
             self.audio_handler.stop_recording()
             print("\nManual recording mode ended.")
             await asyncio.sleep(0.5)  # Wait for server processing
-            
+
             return quit_requested
 
     async def run(self):
-        """Main loop to handle user input and interact with the WebSocket server."""
-        # Connect to WebSocket
-        connection_success = await self.connect()
-        if not connection_success:
-            logger.error("Failed to establish connection. Exiting...")
-            return
-        
+        """Main loop to handle user input and interact with the WebSocket server or chat API."""
+        # Connect to WebSocket only in audio mode
+        connection_success = True
+        if self.conversation_mode == "audio":
+            connection_success = await self.connect()
+            if not connection_success:
+                logger.error("Failed to establish connection. Exiting...")
+                return
+        else:
+            # In chat mode, we don't need to connect to the WebSocket
+            print("Starting in chat mode - using OpenAI Chat Completions API")
+
         # Start event receiver in background
         receive_task = asyncio.create_task(self.receive_events())
-        
+
         # Set up signal handling for clean shutdown
         shutdown_event = asyncio.Event()
 
         # Command options
-        commands = """
-        Commands:
-        q: Quit and save transcript
-        t: Send text message
-        a: Start listening mode (press Enter to stop)
-        m: Manual recording with visual indicators (press Enter to STOP, better for speech detection)
-        l: Start continuous listening (stays active until you press Enter)
-        r: Reconnect if WebSocket connection was lost
-        """
-        
+        if self.conversation_mode == "audio":
+            commands = """
+            Commands:
+            q: Quit and save transcript
+            t: Send text message
+            a: Start listening mode (press Enter to stop)
+            m: Manual recording with visual indicators (press Enter to STOP, better for speech detection)
+            l: Start continuous listening (stays active until you press Enter)
+            r: Reconnect if WebSocket connection was lost
+            """
+        else:  # chat mode
+            commands = """
+            Commands:
+            q: Quit and save transcript
+            r: Reconnect if WebSocket connection was lost
+            a: Switch to audio input mode
+
+            In chat mode, simply type your message and press Enter to send.
+            """
+
         # Initialize continuous listening mode flag
         continuous_listening = True  # Set to True by default
-        
+
         try:
             print("\n=============================================")
             print("Connected to OpenAI Realtime API!")
@@ -1018,10 +1180,15 @@ class RealtimeClient:
             print(f"- Transcript will be saved to: {self.transcript_processor.transcripts_dir.absolute()} when you quit")
             print("\nAvailable commands:")
             print(commands)
-            print("Starting in continuous listening mode automatically...")
-            print("Press Enter to pause listening when needed.")
+            if self.conversation_mode == "audio":
+                print("Starting in continuous listening mode automatically...")
+                print("Press Enter to pause listening when needed.")
+            else:  # chat mode
+                print("Starting in chat-based conversation mode...")
+                print("Type your messages and press Enter to send.")
+                continuous_listening = False  # Don't start in listening mode for chat
             print("=============================================\n")
-            
+
             while not shutdown_event.is_set():
                 if continuous_listening:
                     # In continuous listening mode, only check commands occasionally
@@ -1031,14 +1198,15 @@ class RealtimeClient:
                         # User wants to quit during audio streaming
                         # logger.info("Quit requested during continuous listening mode")
                         break
-                    
+
                     print("Continuous listening paused. Type 'l' to resume or 'q' to quit")
                     continuous_listening = False
-                
+
                 # Better input handling
                 try:
                     # Use asyncio.to_thread instead of run_in_executor for better cancellation handling
-                    command = await asyncio.to_thread(input, "> ")
+                    prompt = "> " if not self.conversation_mode == "chat" else "You: "
+                    command = await asyncio.to_thread(input, prompt)
                 except asyncio.CancelledError:
                     # logger.info("Input task cancelled, exiting...")
                     break
@@ -1046,15 +1214,25 @@ class RealtimeClient:
                     logger.error(f"Error getting input: {e}")
                     await asyncio.sleep(0.5)
                     continue
-                
+
                 # Process command
                 if not command or command.strip() == "":
                     continue
-                    
+
+                # In chat mode, treat any input as a message unless it's a quit command
+                if self.conversation_mode == "chat":
+                    if command.lower() == 'q':
+                        # Exit the loop immediately
+                        break
+                    else:
+                        # Send the text as a message
+                        await self.send_text(command)
+                        continue
+
                 if command.lower() == 'q':
                     # logger.info("Quit command received - exiting application")
                     break  # Exit the loop immediately
-                    
+
                 elif command.lower() == 't':
                     # Check if WebSocket exists
                     if not self.ws:
@@ -1063,7 +1241,7 @@ class RealtimeClient:
                         if not connection_success:
                             logger.error("Failed to reconnect. Please try again.")
                             continue
-                            
+
                     try:
                         # Get text input with better error handling
                         print("Enter your message (press Enter to send):")
@@ -1074,7 +1252,7 @@ class RealtimeClient:
                             print("Empty message, not sending.")
                     except Exception as e:
                         logger.error(f"Error sending text: {e}")
-                        
+
                 elif command.lower() == 'a':
                     # Start single listening session
                     # Check if WebSocket exists
@@ -1084,13 +1262,13 @@ class RealtimeClient:
                         if not connection_success:
                             logger.error("Failed to reconnect. Please try again.")
                             continue
-                            
+
                     print("Starting listening mode... (press Enter to stop)")
                     try:
                         await self.send_audio()
                     except Exception as e:
                         logger.error(f"Error in listening mode: {e}")
-                
+
                 elif command.lower() == 'm':
                     # Manual recording with visual indicators (better for speech detection)
                     if not self.ws:
@@ -1099,7 +1277,7 @@ class RealtimeClient:
                         if not connection_success:
                             logger.error("Failed to reconnect. Please try again.")
                             continue
-                    
+
                     print("\n=== MANUAL RECORDING MODE ===")
                     print("Speak now! Recording will show audio levels.")
                     print("Press Enter when you're DONE speaking to send the recording.")
@@ -1113,7 +1291,7 @@ class RealtimeClient:
                             break
                     except Exception as e:
                         logger.error(f"Error in manual recording: {e}")
-                        
+
                 elif command.lower() == 'l':
                     # Start continuous listening mode
                     if not self.ws:
@@ -1122,10 +1300,10 @@ class RealtimeClient:
                         if not connection_success:
                             logger.error("Failed to reconnect. Please try again.")
                             continue
-                            
+
                     print("Starting continuous listening mode... (session will continue until you press Enter)")
                     continuous_listening = True
-                    
+
                 elif command.lower() == 'r':
                     # Force reconnection
                     # logger.info("Manually reconnecting to the server...")
@@ -1135,20 +1313,20 @@ class RealtimeClient:
                         except:
                             pass
                         self.ws = None
-                    
+
                     connection_success = await self.connect()
                     if connection_success:
                         print("Successfully reconnected to the server!")
                     else:
                         print("Failed to reconnect. Please try again.")
-                        
+
                 else:
                     print(f"Unknown command: {command}")
                     print(commands)
-                
+
                 # Small delay to allow other tasks to run
                 await asyncio.sleep(0.1)
-                
+
         except KeyboardInterrupt:
             logger.info("Interrupted by user (Ctrl+C). Shutting down...")
         except Exception as e:
@@ -1192,7 +1370,7 @@ class RealtimeClient:
 
             # Set shutdown event to signal all tasks to stop
             shutdown_event.set()
-            
+
             # Cancel receive task
             if not receive_task.done():
                 receive_task.cancel()
@@ -1202,11 +1380,11 @@ class RealtimeClient:
                     pass
                 except Exception as e:
                     logger.error(f"Error cancelling receive task: {e}")
-            
+
             # Cleanup
             await self.cleanup()
             # logger.info("Shutdown complete")
-            
+
             # Exit the application immediately
             print("Application terminated.")
             import sys
@@ -1216,10 +1394,10 @@ class RealtimeClient:
         """Clean up resources."""
         # logger.info("Cleaning up resources")
         self.audio_handler.cleanup()
-        
+
         # Stop the transcript processor
         self.transcript_processor.stop()
-        
+
         if self.ws:
             try:
                 await self.ws.close()
@@ -1274,6 +1452,11 @@ class RealtimeClient:
             self.audio_buffer = b''  # Clear any buffered audio
             # Stop any ongoing audio playback
             self.audio_handler.stop_playback()
+
+            # Reset current response text if in chat mode
+            if self.conversation_mode == "chat" and hasattr(self, "current_response_text"):
+                self.current_response_text = ""
+
             print("\nResponse interrupted.")
 
     def _continuously_update_sentiment(self):
@@ -1369,7 +1552,7 @@ def setup_callbacks(shared_scores):
             return format_data_for_radar({emotion: 0 for emotion in CORE_EMOTIONS})
 # --- End Dash App Setup ---
 
-async def main():
+async def main(conversation_mode="audio"):
     # Load API keys from file
     openai_api_key = None
     gemini_api_key = None
@@ -1428,8 +1611,8 @@ async def main():
             logger.warning("Disabling sentiment analysis due to manager initialization failure.")
             enable_sentiment = False # Disable if manager fails
             # Ensure cleanup if partially initialized
-            if manager: 
-                try: manager.shutdown() 
+            if manager:
+                try: manager.shutdown()
                 except Exception: pass
             manager = None
             shared_emotion_scores = None
@@ -1440,8 +1623,12 @@ async def main():
         api_key=openai_api_key,
         google_api_key=gemini_api_key,
         enable_sentiment_analysis=enable_sentiment, # Use potentially updated value
-        shared_emotion_scores=shared_emotion_scores # Pass the shared dict (or None)
+        shared_emotion_scores=shared_emotion_scores, # Pass the shared dict (or None)
+        conversation_mode=conversation_mode # Pass the conversation mode
     )
+
+    # Print the selected mode
+    logger.info(f"Starting in {conversation_mode} conversation mode")
 
     # Setup Dash callbacks, passing the shared dictionary
     if enable_sentiment:
@@ -1526,4 +1713,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logging.getLogger('websockets.client').setLevel(logging.WARNING)
 
-    asyncio.run(main()) 
+    # Parse command line arguments
+    import argparse
+    parser = argparse.ArgumentParser(description='OpenAI Realtime API Client')
+    parser.add_argument('--mode', type=str, choices=['audio', 'chat'], default='audio',
+                        help='Conversation mode: audio (default) or chat')
+    args = parser.parse_args()
+
+    # Pass the conversation mode to the main function
+    asyncio.run(main(conversation_mode=args.mode))
