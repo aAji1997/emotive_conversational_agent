@@ -21,6 +21,9 @@ import dash
 import dash_mantine_components as dmc
 from dash import dcc, html, Input, Output
 
+# Import memory integration
+from memory_integration import MemoryIntegration
+
 # Attempt to import sentiment analyzer, handle gracefully if it doesn't exist
 try:
     from sentiment_analyzer import SentimentAnalysisProcess
@@ -49,12 +52,13 @@ logger = logging.getLogger(__name__)
 
 class RealtimeClient:
     """Client for interacting with the OpenAI Realtime API via WebSocket."""
-    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio"):
+    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio", enable_memory=True):
         # WebSocket Configuration
         self.url = "wss://api.openai.com/v1/realtime"
         self.model = "gpt-4o-mini-realtime-preview-2024-12-17"
         self.chat_model = "gpt-4o"  # Model for chat completions
         self.api_key = api_key # OpenAI API Key
+        self.google_api_key = google_api_key
         self.voice = voice
         self.ws = None
         self.audio_handler = AudioHandler()
@@ -80,6 +84,18 @@ class RealtimeClient:
 
         # Chat history for text-based conversations
         self.chat_history = []
+
+        # Memory integration
+        self.enable_memory = enable_memory
+        self.memory_integration = None
+
+        if self.enable_memory:
+            try:
+                self.memory_integration = MemoryIntegration(openai_api_key=api_key, gemini_api_key=google_api_key)
+                logger.info("Memory integration enabled")
+            except Exception as e:
+                logger.error(f"Failed to initialize memory integration: {e}")
+                self.enable_memory = False
 
         # Server-side VAD configuration
         self.VAD_turn_detection = True
@@ -384,6 +400,12 @@ class RealtimeClient:
                     # Append the delta text
                     self.current_response_text += delta_text
 
+                # In audio mode, also collect the response text for memory processing
+                elif not hasattr(self, "current_audio_response_text"):
+                    self.current_audio_response_text = delta_text
+                else:
+                    self.current_audio_response_text += delta_text
+
         elif event_type == "response.audio.delta":
             # Set responding flag if we receive audio
             if not self.is_responding:
@@ -484,6 +506,26 @@ class RealtimeClient:
 
                 # Reset the current response text
                 self.current_response_text = ""
+
+            # Handle audio mode response completion
+            elif self.conversation_mode == "audio" and hasattr(self, "current_audio_response_text"):
+                # Process the complete audio response text with memory agent
+                if self.enable_memory and self.memory_integration and self.current_audio_response_text:
+                    try:
+                        # Add to transcript first
+                        self.transcript_processor.add_assistant_response(self.current_audio_response_text)
+
+                        # Process with memory agent
+                        asyncio.create_task(self.memory_integration.process_assistant_message(
+                            self.current_audio_response_text,
+                            self.conversation_mode
+                        ))
+                        logger.info("Processing audio response with memory agent")
+                    except Exception as e:
+                        logger.error(f"Error processing audio response with memory agent: {e}")
+
+                # Reset the current audio response text
+                self.current_audio_response_text = ""
 
             print("Saving transcript...")
             transcript_file = self.transcript_processor.save_transcript()
@@ -598,15 +640,48 @@ class RealtimeClient:
         # Add the text query to the transcript
         self.transcript_processor.add_user_query(text)
 
+        # Process message with memory agent if enabled
+        if self.enable_memory and self.memory_integration:
+            try:
+                await self.memory_integration.process_user_message(text, self.conversation_mode)
+                logger.info("Processed user message with memory agent")
+            except Exception as e:
+                logger.error(f"Error processing message with memory agent: {e}")
+
+        # Prepare the message content
+        message_content = [{
+            "type": "input_text",
+            "text": text
+        }]
+
+        # Add memory context if enabled
+        if self.enable_memory and self.memory_integration:
+            try:
+                memory_context = await self.memory_integration.get_context_with_memories(text)
+                if memory_context:
+                    # Add memory context as a system message
+                    await self.send_event({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "system",
+                            "content": [{
+                                "type": "input_text",
+                                "text": memory_context
+                            }]
+                        }
+                    })
+                    logger.info("Added memory context to conversation")
+            except Exception as e:
+                logger.error(f"Error adding memory context: {e}")
+
+        # Send the user message
         await self.send_event({
             "type": "conversation.item.create",
             "item": {
                 "type": "message",
                 "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": text
-                }]
+                "content": message_content
             }
         })
 
@@ -662,6 +737,14 @@ class RealtimeClient:
         if self.enable_sentiment_analysis:
             await self._process_text_for_sentiment(text, "user")
 
+        # Process message with memory agent if enabled
+        if self.enable_memory and self.memory_integration:
+            try:
+                await self.memory_integration.process_user_message(text, self.conversation_mode)
+                logger.info("Processed user message with memory agent")
+            except Exception as e:
+                logger.error(f"Error processing message with memory agent: {e}")
+
         # Set responding state
         self.is_responding = True
         self.response_complete_event.clear()
@@ -674,6 +757,15 @@ class RealtimeClient:
             messages = []
             for msg in self.chat_history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
+
+            # Enhance messages with memories if enabled
+            if self.enable_memory and self.memory_integration:
+                try:
+                    enhanced_messages = await self.memory_integration.enhance_chat_messages(messages, text)
+                    messages = enhanced_messages
+                    logger.info("Enhanced chat messages with memories")
+                except Exception as e:
+                    logger.error(f"Error enhancing messages with memories: {e}")
 
             # Call the chat completions API
             response = self.openai_client.chat.completions.create(
@@ -698,6 +790,14 @@ class RealtimeClient:
             if self.enable_sentiment_analysis:
                 await self._process_text_for_sentiment(response_text, "model")
 
+            # Process assistant message with memory agent if enabled
+            if self.enable_memory and self.memory_integration:
+                try:
+                    await self.memory_integration.process_assistant_message(response_text, self.conversation_mode)
+                    logger.info("Processed assistant message with memory agent")
+                except Exception as e:
+                    logger.error(f"Error processing assistant message with memory agent: {e}")
+
             # Save transcript
             print("\nSaving transcript...")
             transcript_file = self.transcript_processor.save_transcript()
@@ -709,6 +809,10 @@ class RealtimeClient:
             # Print sentiment results if available
             if self.enable_sentiment_analysis and hasattr(self, 'sentiment_process') and self.sentiment_process is not None:
                 print("\nSentiment analysis is enabled. Results will be shown in the emotion radar chart.")
+
+            # Print memory status if enabled
+            if self.enable_memory and self.memory_integration:
+                print("\nMemory system is active. Relevant memories will be used in future conversations.")
 
         except Exception as e:
             logger.error(f"Error in chat completions: {e}")
@@ -1443,6 +1547,16 @@ class RealtimeClient:
              self.manager = None # Ensure it's cleared
         # ---------------------------------------
 
+        # --- Clean up memory integration ---
+        if self.enable_memory and self.memory_integration:
+            try:
+                await self.memory_integration.cleanup()
+                logger.info("Memory integration cleaned up")
+            except Exception as e:
+                logger.error(f"Error cleaning up memory integration: {e}")
+            self.memory_integration = None
+        # ---------------------------------------
+
     def reset_audio_state(self):
         """Reset audio state when interrupted."""
         if self.is_responding:
@@ -1456,6 +1570,10 @@ class RealtimeClient:
             # Reset current response text if in chat mode
             if self.conversation_mode == "chat" and hasattr(self, "current_response_text"):
                 self.current_response_text = ""
+
+            # Reset current audio response text if in audio mode
+            if self.conversation_mode == "audio" and hasattr(self, "current_audio_response_text"):
+                self.current_audio_response_text = ""
 
             print("\nResponse interrupted.")
 
@@ -1552,7 +1670,7 @@ def setup_callbacks(shared_scores):
             return format_data_for_radar({emotion: 0 for emotion in CORE_EMOTIONS})
 # --- End Dash App Setup ---
 
-async def main(conversation_mode="audio"):
+async def main(conversation_mode="audio", enable_memory=True):
     # Load API keys from file
     openai_api_key = None
     gemini_api_key = None
@@ -1624,11 +1742,13 @@ async def main(conversation_mode="audio"):
         google_api_key=gemini_api_key,
         enable_sentiment_analysis=enable_sentiment, # Use potentially updated value
         shared_emotion_scores=shared_emotion_scores, # Pass the shared dict (or None)
-        conversation_mode=conversation_mode # Pass the conversation mode
+        conversation_mode=conversation_mode, # Pass the conversation mode
+        enable_memory=enable_memory # Pass the memory flag
     )
 
-    # Print the selected mode
+    # Print the selected mode and memory status
     logger.info(f"Starting in {conversation_mode} conversation mode")
+    logger.info(f"Memory system is {'enabled' if enable_memory else 'disabled'}")
 
     # Setup Dash callbacks, passing the shared dictionary
     if enable_sentiment:
@@ -1718,7 +1838,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='OpenAI Realtime API Client')
     parser.add_argument('--mode', type=str, choices=['audio', 'chat'], default='audio',
                         help='Conversation mode: audio (default) or chat')
+    parser.add_argument('--memory', action='store_true', help='Enable memory system (default)')
+    parser.add_argument('--no-memory', action='store_true', help='Disable memory system')
     args = parser.parse_args()
 
+    # Determine if memory should be enabled
+    enable_memory = not args.no_memory if args.no_memory else True
+
     # Pass the conversation mode to the main function
-    asyncio.run(main(conversation_mode=args.mode))
+    asyncio.run(main(conversation_mode=args.mode, enable_memory=enable_memory))
