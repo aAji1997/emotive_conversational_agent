@@ -1,0 +1,32 @@
+[
+  {
+    "timestamp": 1744790424.722901,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 3,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 3, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.333333333333332
+  },
+  {
+    "timestamp": 1744790435.4618747,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.333333333333332
+  }
+]
