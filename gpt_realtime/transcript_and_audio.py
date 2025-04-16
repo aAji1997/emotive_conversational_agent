@@ -258,10 +258,38 @@ class TranscriptProcessor:
 
         logger.info(f"Added assistant response to transcript: {response_text[:30]}...")
 
-    def save_transcript(self):
-        """Save the complete transcript to a file at the end of the conversation."""
+    def update_transcript(self):
+        """Update the in-memory transcript without saving to a file.
+        Returns a cleaned version of the conversation for display purposes."""
+        if not self.full_conversation:
+            logger.info("No transcript to update")
+            return None
+
+        # Clean up any unresolved placeholders
+        cleaned_conversation = []
+        for entry in self.full_conversation:
+            if entry == "User: [Processing speech...]":
+                # Skip unresolved placeholders
+                continue
+            cleaned_conversation.append(entry)
+
+        logger.info("In-memory transcript updated")
+        return cleaned_conversation
+
+    def save_transcript(self, force=False):
+        """Save the complete transcript to a file at the end of the conversation.
+
+        Args:
+            force (bool): If True, always save the transcript. If False, only save if this is the final save.
+        """
         if not self.full_conversation:
             logger.info("No transcript to save")
+            return None
+
+        # Only save if force=True (this is the final save at the end of the session)
+        # This prevents saving intermediate transcripts during the conversation
+        if not force:
+            logger.info("Skipping intermediate transcript save")
             return None
 
         # Clean up any unresolved placeholders before saving

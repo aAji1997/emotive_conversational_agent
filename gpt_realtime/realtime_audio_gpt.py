@@ -527,12 +527,9 @@ class RealtimeClient:
                 # Reset the current audio response text
                 self.current_audio_response_text = ""
 
-            print("Saving transcript...")
-            transcript_file = self.transcript_processor.save_transcript()
-            if transcript_file:
-                print(f"Complete transcript saved to: {transcript_file}")
-            else:
-                print("No transcript to save.")
+            print("Updating transcript...")
+            self.transcript_processor.update_transcript()
+            print("Transcript updated in memory.")
 
             # --- Retrieve and print sentiment results ---
             if self.enable_sentiment_analysis and self.sentiment_history_list is not None:
@@ -798,13 +795,10 @@ class RealtimeClient:
                 except Exception as e:
                     logger.error(f"Error processing assistant message with memory agent: {e}")
 
-            # Save transcript
-            print("\nSaving transcript...")
-            transcript_file = self.transcript_processor.save_transcript()
-            if transcript_file:
-                print(f"Complete transcript saved to: {transcript_file}")
-            else:
-                print("No transcript to save.")
+            # Update transcript in memory
+            print("\nUpdating transcript...")
+            self.transcript_processor.update_transcript()
+            print("Transcript updated in memory.")
 
             # Print sentiment results if available
             if self.enable_sentiment_analysis and hasattr(self, 'sentiment_process') and self.sentiment_process is not None:
@@ -1438,9 +1432,9 @@ class RealtimeClient:
             import traceback
             logger.error(traceback.format_exc())
         finally:
-            # Save transcript before exiting
+            # Save transcript before exiting (force=True to ensure it's saved)
             print("Saving transcript and exiting...")
-            transcript_file = self.transcript_processor.save_transcript()
+            transcript_file = self.transcript_processor.save_transcript(force=True)
             if transcript_file:
                 print(f"Complete transcript saved to: {transcript_file}")
             else:
@@ -1845,5 +1839,5 @@ if __name__ == "__main__":
     # Determine if memory should be enabled
     enable_memory = not args.no_memory if args.no_memory else True
 
-    # Pass the conversation mode to the main function
+    # Pass the conversation mode to  main
     asyncio.run(main(conversation_mode=args.mode, enable_memory=enable_memory))
