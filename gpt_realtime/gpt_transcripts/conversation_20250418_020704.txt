@@ -1,0 +1,11 @@
+Complete Conversation Transcript: 20250418_020704
+--------------------------------------------------
+
+User: Hey!
+
+Assistant: Hello, Samantha! How have you been?
+
+User: Not too great. You know where I live right?
+
+Assistant: It seems I don't have that specific information about where you live. If you're comfortable sharing, I'd be happy to remember it for future conversations. Is there anything I can do to help improve your day?
+

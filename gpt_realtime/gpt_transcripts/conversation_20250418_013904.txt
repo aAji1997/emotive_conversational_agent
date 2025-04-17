@@ -1,0 +1,11 @@
+Complete Conversation Transcript: 20250418_013904
+--------------------------------------------------
+
+User: Hello
+
+Assistant: Hello, Samantha! How are you doing today?
+
+User: I'm good, I just moved into a new appartment, moved over from Sacremento to Seattle.
+
+Assistant: That's exciting, Samantha! Moving to a new city is a big change. How are you finding Seattle so far compared to Sacramento?
+

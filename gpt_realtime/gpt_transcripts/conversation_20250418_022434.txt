@@ -1,0 +1,11 @@
+Complete Conversation Transcript: 20250418_022434
+--------------------------------------------------
+
+User: Hey!
+
+Assistant: Hi, Samantha! How's your day going so far?
+
+User: Good. I just moved all the way from Sacremento to Seattle, I'm in my new appartment.
+
+Assistant: That's exciting, Samantha! Moving from Sacramento to Seattle is quite a change. How are you finding your new apartment and the city so far? I'll make a note that you've moved to Seattle.
+

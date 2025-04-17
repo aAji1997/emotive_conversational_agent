@@ -1,5 +1,9 @@
 # API keys and sensitive information
 .api_key.json
+.env
+
+# Excluded folders
+misc/
 
 # Python
 __pycache__/
@@ -36,4 +40,4 @@ ENV/
 
 # OS
 .DS_Store
-Thumbs.db 
+Thumbs.db

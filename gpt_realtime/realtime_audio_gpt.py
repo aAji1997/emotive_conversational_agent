@@ -1,4 +1,12 @@
-from transcript_and_audio import AudioHandler, TranscriptProcessor
+import os
+import sys
+from pathlib import Path
+project_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(project_root))
+# Import logging configuration
+from gpt_realtime.logging_config import configure_logging
+configure_logging()
+
 import asyncio
 import websockets
 import json
@@ -10,10 +18,12 @@ import multiprocessing
 import queue
 import threading
 import random
-import os
+
 import traceback
 
-# Import OpenAI for chat completions
+from gpt_realtime.transcript_and_audio import AudioHandler, TranscriptProcessor
+
+
 import openai
 
 # Dash / Plotting Imports
@@ -22,11 +32,14 @@ import dash_mantine_components as dmc
 from dash import dcc, html, Input, Output
 
 # Import memory integration
-from memory_integration import MemoryIntegration
+from memory.memory_integration import MemoryIntegration
+
+# Import user account manager
+from accounts.user_account_manager import UserAccountManager
 
 # Attempt to import sentiment analyzer, handle gracefully if it doesn't exist
 try:
-    from sentiment_analyzer import SentimentAnalysisProcess
+    from gpt_realtime.sentiment_analyzer import SentimentAnalysisProcess
 except ImportError:
     SentimentAnalysisProcess = None
     print("WARNING: sentiment_analyzer.py not found or SentimentAnalysisProcess class missing.")
@@ -52,7 +65,7 @@ logger = logging.getLogger(__name__)
 
 class RealtimeClient:
     """Client for interacting with the OpenAI Realtime API via WebSocket."""
-    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio", enable_memory=True):
+    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio", enable_memory=True, user_id=None, username=None):
         # WebSocket Configuration
         self.url = "wss://api.openai.com/v1/realtime"
         self.model = "gpt-4o-mini-realtime-preview-2024-12-17"
@@ -62,6 +75,10 @@ class RealtimeClient:
         self.voice = voice
         self.ws = None
         self.audio_handler = AudioHandler()
+
+        # User information
+        self.user_id = user_id
+        self.username = username
 
         # Initialize OpenAI client for chat completions
         self.openai_client = openai.OpenAI(api_key=api_key)
@@ -91,8 +108,25 @@ class RealtimeClient:
 
         if self.enable_memory:
             try:
-                self.memory_integration = MemoryIntegration(openai_api_key=api_key, gemini_api_key=google_api_key)
-                logger.info("Memory integration enabled")
+                # Load Supabase credentials from .api_key.json
+                try:
+                    with open('.api_key.json', 'r') as f:
+                        api_keys = json.load(f)
+                        supabase_url = api_keys.get('supabase_url')
+                        supabase_key = api_keys.get('supabase_api_key')
+                except Exception as e:
+                    logger.warning(f"Could not load Supabase credentials: {e}")
+                    supabase_url = None
+                    supabase_key = None
+
+                self.memory_integration = MemoryIntegration(
+                    openai_api_key=api_key,
+                    gemini_api_key=google_api_key,
+                    user_id=user_id,
+                    supabase_url=supabase_url,
+                    supabase_key=supabase_key
+                )
+                logger.info(f"Memory integration enabled for user: {username if username else 'Anonymous'}")
             except Exception as e:
                 logger.error(f"Failed to initialize memory integration: {e}")
                 self.enable_memory = False
@@ -109,12 +143,15 @@ class RealtimeClient:
         }
 
         # Session configuration
+        # Create personalized instructions if username is available
+        user_greeting = f"The user's name is {self.username}." if self.username else ""
+
         self.session_config = {
             "modalities": ["audio", "text"],
             "voice": self.voice,
             "input_audio_format": "pcm16",
             "output_audio_format": "pcm16",
-            "instructions": "You are a helpful AI assistant. Respond in a clear and engaging way. If the user's audio is quiet or unclear, still do your best to respond appropriately.",
+            "instructions": f"You are a helpful AI assistant with access to memories from previous conversations. {user_greeting} These memories will be provided to you as system messages starting with '### Relevant memories from previous conversations:'. Use these memories to provide personalized and contextually relevant responses. When appropriate, reference these past interactions naturally. Respond in a clear and engaging way. If the user's audio is quiet or unclear, still do your best to respond appropriately.\n\nYou have the ability to create new memories about the user. When you want to explicitly remember something important about the user, you can use phrases like 'I'll remember that about you' or 'I'll make a note of that.' When you use these phrases, the system will automatically store this information in your memory. This is particularly useful for important user preferences, personal details, or significant events that would be helpful to recall in future conversations.\n\nYou can also explicitly trigger memory retrieval by using phrases like 'let me recall' or 'let me see what I know about you' or 'based on our previous conversations'. When you use these phrases, the system will prioritize retrieving relevant memories to help you provide more personalized responses.\n\nIf you attempt to recall information but no relevant memories are found, you will receive a system message starting with '### Memory retrieval note:'. In such cases, acknowledge that you don't have that specific information in your memory and respond based on your general knowledge instead. Be honest about what you don't know about the user's past interactions.",
             "turn_detection": self.VAD_config if self.VAD_turn_detection else None,
             "input_audio_transcription": {
                 "model": "whisper-1"
@@ -651,10 +688,20 @@ class RealtimeClient:
             "text": text
         }]
 
+        # Check if the message contains phrases indicating memory retrieval intent
+        retrieval_intent = False
+        if self.enable_memory and self.memory_integration:
+            try:
+                retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(text)
+                if retrieval_intent:
+                    logger.info("Detected memory retrieval intent in user message")
+            except Exception as e:
+                logger.error(f"Error detecting memory retrieval intent: {e}")
+
         # Add memory context if enabled
         if self.enable_memory and self.memory_integration:
             try:
-                memory_context = await self.memory_integration.get_context_with_memories(text)
+                memory_context = await self.memory_integration.get_context_with_memories(text, retrieval_intent)
                 if memory_context:
                     # Add memory context as a system message
                     await self.send_event({
@@ -752,8 +799,30 @@ class RealtimeClient:
 
             # Create messages for the API call
             messages = []
+
+            # Add system message with instructions about memory capabilities
+            # Create personalized instructions if username is available
+            user_greeting = f"The user's name is {self.username}." if self.username else ""
+
+            system_message = {
+                "role": "system",
+                "content": f"You are a helpful AI assistant with access to memories from previous conversations. {user_greeting} Use these memories to provide personalized and contextually relevant responses. When appropriate, reference these past interactions naturally.\n\nYou have the ability to create new memories about the user. When you want to explicitly remember something important about the user, you can use phrases like 'I'll remember that about you' or 'I'll make a note of that.' When you use these phrases, the system will automatically store this information in your memory. This is particularly useful for important user preferences, personal details, or significant events that would be helpful to recall in future conversations.\n\nYou can also explicitly trigger memory retrieval by using phrases like 'let me recall' or 'let me see what I know about you' or 'based on our previous conversations'. When you use these phrases, the system will prioritize retrieving relevant memories to help you provide more personalized responses.\n\nIf you attempt to recall information but no relevant memories are found, you will receive a system message starting with '### Memory retrieval note:'. In such cases, acknowledge that you don't have that specific information in your memory and respond based on your general knowledge instead. Be honest about what you don't know about the user's past interactions."
+            }
+            messages.append(system_message)
+
+            # Add chat history
             for msg in self.chat_history:
                 messages.append({"role": msg["role"], "content": msg["content"]})
+
+            # Check if the message contains phrases indicating memory retrieval intent
+            retrieval_intent = False
+            if self.enable_memory and self.memory_integration:
+                try:
+                    retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(text)
+                    if retrieval_intent:
+                        logger.info("Detected memory retrieval intent in chat message")
+                except Exception as e:
+                    logger.error(f"Error detecting memory retrieval intent: {e}")
 
             # Enhance messages with memories if enabled
             if self.enable_memory and self.memory_integration:
@@ -1253,6 +1322,7 @@ class RealtimeClient:
             m: Manual recording with visual indicators (press Enter to STOP, better for speech detection)
             l: Start continuous listening (stays active until you press Enter)
             r: Reconnect if WebSocket connection was lost
+            s: Store a memory directly
             """
         else:  # chat mode
             commands = """
@@ -1260,6 +1330,7 @@ class RealtimeClient:
             q: Quit and save transcript
             r: Reconnect if WebSocket connection was lost
             a: Switch to audio input mode
+            s: Store a memory directly
 
             In chat mode, simply type your message and press Enter to send.
             """
@@ -1295,6 +1366,19 @@ class RealtimeClient:
                     if quit_requested:
                         # User wants to quit during audio streaming
                         # logger.info("Quit requested during continuous listening mode")
+
+                        # Run memory deduplication if memory is enabled
+                        if self.enable_memory and self.memory_integration:
+                            try:
+                                print("\n=== Running memory deduplication ===")
+                                duplicates_removed = await self.memory_integration.deduplicate_memories(similarity_threshold=0.7)
+                                print(f"Removed {duplicates_removed} duplicate memories")
+                                # Wait a moment for deduplication to complete
+                                await asyncio.sleep(1)
+                            except Exception as e:
+                                logger.error(f"Error running memory deduplication: {e}")
+                                print(f"Error running memory deduplication: {str(e)}")
+
                         break
 
                     print("Continuous listening paused. Type 'l' to resume or 'q' to quit")
@@ -1320,6 +1404,18 @@ class RealtimeClient:
                 # In chat mode, treat any input as a message unless it's a quit command
                 if self.conversation_mode == "chat":
                     if command.lower() == 'q':
+                        # Run memory deduplication if memory is enabled
+                        if self.enable_memory and self.memory_integration:
+                            try:
+                                print("\n=== Running memory deduplication ===")
+                                duplicates_removed = await self.memory_integration.deduplicate_memories(similarity_threshold=0.7)
+                                print(f"Removed {duplicates_removed} duplicate memories")
+                                # Wait a moment for deduplication to complete
+                                await asyncio.sleep(1)
+                            except Exception as e:
+                                logger.error(f"Error running memory deduplication: {e}")
+                                print(f"Error running memory deduplication: {str(e)}")
+
                         # Exit the loop immediately
                         break
                     else:
@@ -1329,6 +1425,19 @@ class RealtimeClient:
 
                 if command.lower() == 'q':
                     # logger.info("Quit command received - exiting application")
+
+                    # Run memory deduplication if memory is enabled
+                    if self.enable_memory and self.memory_integration:
+                        try:
+                            print("\n=== Running memory deduplication ===")
+                            duplicates_removed = await self.memory_integration.deduplicate_memories(similarity_threshold=0.7)
+                            print(f"Removed {duplicates_removed} duplicate memories")
+                            # Wait a moment for deduplication to complete
+                            await asyncio.sleep(1)
+                        except Exception as e:
+                            logger.error(f"Error running memory deduplication: {e}")
+                            print(f"Error running memory deduplication: {str(e)}")
+
                     break  # Exit the loop immediately
 
                 elif command.lower() == 't':
@@ -1386,6 +1495,19 @@ class RealtimeClient:
                         if quit_requested:
                             # User wants to quit during manual recording
                             # logger.info("Quit requested during manual recording mode")
+
+                            # Run memory deduplication if memory is enabled
+                            if self.enable_memory and self.memory_integration:
+                                try:
+                                    print("\n=== Running memory deduplication ===")
+                                    duplicates_removed = await self.memory_integration.deduplicate_memories(similarity_threshold=0.7)
+                                    print(f"Removed {duplicates_removed} duplicate memories")
+                                    # Wait a moment for deduplication to complete
+                                    await asyncio.sleep(1)
+                                except Exception as e:
+                                    logger.error(f"Error running memory deduplication: {e}")
+                                    print(f"Error running memory deduplication: {str(e)}")
+
                             break
                     except Exception as e:
                         logger.error(f"Error in manual recording: {e}")
@@ -1417,6 +1539,48 @@ class RealtimeClient:
                         print("Successfully reconnected to the server!")
                     else:
                         print("Failed to reconnect. Please try again.")
+
+                elif command.lower() == 's':
+                    # Store a memory directly
+                    if not self.enable_memory or not self.memory_integration:
+                        print("Memory system is not enabled.")
+                        continue
+
+                    try:
+                        print("Enter the memory content:")
+                        content = await asyncio.to_thread(input)
+                        if not content.strip():
+                            print("Empty content, not storing.")
+                            continue
+
+                        print("Enter the importance (1-10, default 8):")
+                        importance_str = await asyncio.to_thread(input)
+                        importance = 8
+                        if importance_str.strip():
+                            try:
+                                importance = int(importance_str)
+                                if importance < 1 or importance > 10:
+                                    print("Importance must be between 1 and 10, using default 8.")
+                                    importance = 8
+                            except ValueError:
+                                print("Invalid importance, using default 8.")
+
+                        print("Enter the category (default 'preference'):")
+                        category = await asyncio.to_thread(input)
+                        if not category.strip():
+                            category = "preference"
+
+                        # Store the memory directly
+                        result = await self.memory_integration.store_memory_directly(
+                            content=content,
+                            importance=importance,
+                            category=category
+                        )
+
+                        print(f"Memory storage result: {result}")
+                    except Exception as e:
+                        logger.error(f"Error storing memory directly: {e}")
+                        print(f"Error storing memory: {str(e)}")
 
                 else:
                     print(f"Unknown command: {command}")
@@ -1483,10 +1647,8 @@ class RealtimeClient:
             await self.cleanup()
             # logger.info("Shutdown complete")
 
-            # Exit the application immediately
+            # Return from the run method to allow proper cleanup
             print("Application terminated.")
-            import sys
-            sys.exit(0)
 
     async def cleanup(self):
         """Clean up resources."""
@@ -1650,7 +1812,7 @@ def setup_callbacks(shared_scores):
         Output('emotion-radar-chart', 'data'),
         Input('interval-component', 'n_intervals')
     )
-    def update_radar_chart(n):
+    def update_radar_chart(_):
         """Reads from the shared dictionary and updates the chart data."""
         if shared_scores is not None:
             # Read the current scores (convert Manager.dict to regular dict)
@@ -1664,7 +1826,62 @@ def setup_callbacks(shared_scores):
             return format_data_for_radar({emotion: 0 for emotion in CORE_EMOTIONS})
 # --- End Dash App Setup ---
 
+async def handle_user_account():
+    """Handle user login or registration at startup.
+
+    Returns:
+        Tuple of (user_id, username) if successful, (None, None) otherwise
+    """
+    print("\n=== User Account System ===")
+    print("Please enter your username to log in or register a new account.")
+    username = input("Username: ").strip()
+
+    if not username:
+        print("No username provided. Continuing as anonymous user.")
+        return None, None
+
+    # Initialize user account manager
+    user_manager = UserAccountManager()
+    if not user_manager.connect():
+        logger.error("Failed to connect to Supabase for user account management")
+        print("Error connecting to user database. Continuing as anonymous user.")
+        return None, None
+
+    # Try to log in with the provided username
+    user = user_manager.login_user(username)
+
+    if user:
+        print(f"\nWelcome back, {user.get('display_name', username)}!")
+        return user.get('id'), username
+    else:
+        # User doesn't exist, ask if they want to register
+        print(f"\nUser '{username}' not found.")
+        register = input("Would you like to register a new account? (y/n): ").strip().lower()
+
+        if register == 'y':
+            # Ask for optional display name
+            display_name = input("Display name (optional, press Enter to use username): ").strip()
+            if not display_name:
+                display_name = username
+
+            # Register the new user
+            user = user_manager.register_user(username=username, display_name=display_name)
+
+            if user:
+                print(f"\nAccount created successfully. Welcome, {display_name}!")
+                return user.get('id'), username
+            else:
+                print("\nFailed to create account. Continuing as anonymous user.")
+                return None, None
+        else:
+            print("\nContinuing as anonymous user.")
+            return None, None
+
 async def main(conversation_mode="audio", enable_memory=True):
+    # Initialize user variables
+    user_id = None
+    username = None
+
     # Load API keys from file
     openai_api_key = None
     gemini_api_key = None
@@ -1699,15 +1916,21 @@ async def main(conversation_mode="audio", enable_memory=True):
         logger.error("OpenAI API key ('openai_api_key') not found in .api_key.json")
         return
 
+    # --- Handle User Account --- #
+    user_id, username = await handle_user_account()
+
     # Decide whether to enable sentiment analysis
     # For now, enable it if the Gemini key is present and the class was imported
     enable_sentiment = bool(gemini_api_key and SentimentAnalysisProcess)
     if enable_sentiment:
         logger.info("Gemini API key found. Enabling sentiment analysis.")
+        print("\nSentiment analysis is ENABLED.")
     elif gemini_api_key:
         logger.warning("Gemini API key found, but SentimentAnalysisProcess class not loaded. Sentiment analysis disabled.")
+        print("\nSentiment analysis is DISABLED: SentimentAnalysisProcess class not loaded.")
     else:
         logger.info("Gemini API key not found. Sentiment analysis disabled.")
+        print("\nSentiment analysis is DISABLED: Gemini API key not found.")
 
     # --- Multiprocessing and Shared Data Setup ---
     manager = None
@@ -1737,7 +1960,9 @@ async def main(conversation_mode="audio", enable_memory=True):
         enable_sentiment_analysis=enable_sentiment, # Use potentially updated value
         shared_emotion_scores=shared_emotion_scores, # Pass the shared dict (or None)
         conversation_mode=conversation_mode, # Pass the conversation mode
-        enable_memory=enable_memory # Pass the memory flag
+        enable_memory=enable_memory, # Pass the memory flag
+        user_id=user_id, # Pass the user ID
+        username=username # Pass the username
     )
 
     # Print the selected mode and memory status
@@ -1755,7 +1980,6 @@ async def main(conversation_mode="audio", enable_memory=True):
 
     # --- Threading Setup for Client ---
     client_thread = None
-    client_stop_event = asyncio.Event() # Use asyncio event if needed within async context, though cleanup is handled internally
 
     async def run_client_async():
         nonlocal client
@@ -1766,7 +1990,6 @@ async def main(conversation_mode="audio", enable_memory=True):
              traceback.print_exc()
         finally:
             logger.info("RealtimeClient run has completed or exited.")
-            # Signal main thread or handle cleanup if necessary
             # Note: client.cleanup() is called within client.run()'s finally block
 
     # Start the client in a separate thread
@@ -1781,28 +2004,88 @@ async def main(conversation_mode="audio", enable_memory=True):
             loop.close()
             logger.info("Client thread event loop closed.")
 
-    client_thread = threading.Thread(target=start_client_thread, daemon=True)
+    # Use daemon=False so we can properly join this thread
+    client_thread = threading.Thread(target=start_client_thread, daemon=False)
     client_thread.start()
     logger.info("RealtimeClient started in a background thread.")
     # -----------------------------------
 
+    # --- Create a shutdown event for Dash app --- #
+    # Create a threading event to signal when to shut down the Dash app
+    dash_shutdown_event = threading.Event()
+
+    # Create a function to check if we should shut down the Dash app
+    def check_shutdown():
+        if dash_shutdown_event.is_set():
+            # If the shutdown event is set, shut down the Dash server
+            logger.info("Shutting down Dash server...")
+            import flask
+            # Get the Flask server from the Dash app
+            # We need to access app.server to initialize the Flask server
+            # even though we don't use the variable directly
+            _ = app.server
+            # Request shutdown of the Flask server
+            func = flask.request.environ.get('werkzeug.server.shutdown')
+            if func is None:
+                logger.warning("Not running with Werkzeug server, cannot shut down cleanly")
+                # Force exit as fallback
+                import os
+                os._exit(0)
+            func()
+            return True
+        # Check again in 1 second
+        import dash
+        dash.callback_context.record_timing("shutdown-check", 1000, check_shutdown)
+        return False
+
+    # Add a clientside callback to check for shutdown
+    app.clientside_callback(
+        """
+        function(n_intervals) {
+            return window.dash_clientside.no_update;
+        }
+        """,
+        dash.Output('interval-component', 'disabled', allow_duplicate=True),
+        dash.Input('interval-component', 'n_intervals'),
+        prevent_initial_call=True
+    )
+
+    # Add a server-side callback to check for shutdown
+    @app.callback(
+        dash.Output('interval-component', 'disabled'),
+        dash.Input('interval-component', 'n_intervals'),
+        prevent_initial_call=True
+    )
+    def check_for_shutdown(_):
+        # Underscore parameter name to indicate it's not used
+        return check_shutdown()
+
     # --- Run Dash App --- #
-    # Run Dash in the main thread. It will block here.
+    # Start Dash in a separate thread so it doesn't block
+    dash_thread = threading.Thread(target=lambda: app.run(debug=False, host='0.0.0.0', port=8050), daemon=True)
+    dash_thread.start()
     print("Starting Dash server for Emotion Radar Chart...")
     print("Access the chart at: http://127.0.0.1:8050/")
+
     try:
-        # Host 0.0.0.0 makes it accessible on the network
-        app.run(debug=False, host='0.0.0.0', port=8050)
+        # Wait for the client thread to finish
+        client_thread.join()
+        logger.info("Client thread has exited, signaling Dash to shut down")
+        # Signal Dash to shut down
+        dash_shutdown_event.set()
+        # Give Dash a moment to shut down gracefully
+        dash_thread.join(timeout=5)
+        if dash_thread.is_alive():
+            logger.warning("Dash thread did not exit gracefully, forcing shutdown")
     except KeyboardInterrupt:
-        logger.info("Dash server interrupted by user (Ctrl+C).")
+        logger.info("Interrupted by user (Ctrl+C).")
+        # Signal Dash to shut down
+        dash_shutdown_event.set()
     except Exception as e:
-        logger.error(f"Error running Dash server: {e}")
+        logger.error(f"Error in main thread: {e}")
         traceback.print_exc()
     finally:
-        logger.info("Dash server shutting down.")
-        # Signal the client thread to stop (client.run handles internal cleanup)
-        # The client's cleanup should already be triggered by its own shutdown logic
-        # or when the main program exits (due to daemon thread).
+        logger.info("Application shutting down.")
         # Ensure manager is shutdown if it was created
         if manager:
             logger.info("Attempting to shut down multiprocessing manager...")
@@ -1810,13 +2093,6 @@ async def main(conversation_mode="audio", enable_memory=True):
                 manager.shutdown()
             except Exception as e:
                 logger.error(f"Error shutting down multiprocessing manager: {e}")
-
-        # Wait briefly for the client thread to finish its cleanup if needed
-        if client_thread and client_thread.is_alive():
-             logger.info("Waiting briefly for client thread cleanup...")
-             client_thread.join(timeout=5)
-             if client_thread.is_alive():
-                 logger.warning("Client thread did not exit after Dash shutdown.")
 
         logger.info("Exiting application main function.")
     # ------------------ #

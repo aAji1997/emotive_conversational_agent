@@ -1,0 +1,12 @@
+Complete Conversation Transcript: 20250416_202610
+--------------------------------------------------
+
+--- Speech detected ---
+User: Hello.
+
+--- Speech ended ---
+
+Assistant: Hi there! How can I assist you today?
+Assistant: Hi there! How can I assist you today?
+------------------------------
+
