@@ -106,6 +106,13 @@ class RealtimeClient:
         self.enable_memory = enable_memory
         self.memory_integration = None
 
+        # Memory context flags
+        self.waiting_to_add_memory = False
+        self.memory_context_to_add = None
+
+        # Shutdown flag to prevent processing events after quit
+        self.shutdown_in_progress = False
+
         if self.enable_memory:
             try:
                 # Load Supabase credentials from .api_key.json
@@ -375,6 +382,10 @@ class RealtimeClient:
 
     async def handle_event(self, event):
         """Handle incoming events from the WebSocket server."""
+        # If shutdown is in progress, ignore all events
+        if hasattr(self, 'shutdown_in_progress') and self.shutdown_in_progress:
+            return
+
         event_type = event.get("type")
 
         # Log all event types to help with debugging
@@ -407,6 +418,174 @@ class RealtimeClient:
                     # Add to transcript
                     self.transcript_processor.add_user_query(transcript)
 
+                    # Flag to track if we need to create a response
+                    create_response = True
+
+                    # Process with memory agent if enabled
+                    if self.enable_memory and self.memory_integration:
+                        try:
+                            # Process user message with memory agent
+                            asyncio.create_task(self.memory_integration.process_user_message(transcript, self.conversation_mode))
+                            logger.info("Processing user audio transcript with memory agent")
+                            print(f"\n[MEMORY INTEGRATION] Processing user audio transcript with memory agent")
+
+                            # Check if this message might need memory context
+                            # We're being more selective now - only check for memories when it seems relevant
+                            retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(transcript)
+
+                            # Only check for location-related terms if the message is a question or seems to be asking about location
+                            location_terms = ['where', 'live', 'location', 'address', 'city', 'state', 'country', 'from', 'reside']
+                            contains_question = '?' in transcript or any(q in transcript.lower() for q in ['what', 'where', 'when', 'how', 'who', 'why'])
+                            might_need_location = contains_question and any(term in transcript.lower() for term in location_terms)
+
+                            # For location-related queries, we'll handle the response creation differently
+                            # to prevent the "I don't know" followed by "Actually I do know" issue
+                            if retrieval_intent or might_need_location:
+                                if retrieval_intent:
+                                    print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent: '{transcript[:50]}...'")
+                                elif might_need_location:
+                                    print(f"\n[MEMORY INTEGRATION] Detected location-related question: '{transcript[:50]}...'")
+
+                                # For location queries, we'll skip the normal response creation
+                                # and only create a response after memory retrieval
+                                create_response = False
+
+                                # Print a message to the console to indicate we're waiting for memory retrieval
+                                print(f"\n[MEMORY INTEGRATION] Delaying response for location query until memory retrieval completes")
+
+                                # ===== MEMORY QUERY SUPPRESSION MECHANISM =====
+                                # This is a bespoke solution to fix the "I don't know/Actually I do know" problem
+                                # When a memory-related query is detected, we need to suppress the initial incorrect response
+                                # that would say "I don't know where you live" and only play the second response that has
+                                # the correct memory context.
+                                #
+                                # The approach works as follows:
+                                # 1. Set memory_query_in_progress flag when a memory query is detected
+                                # 2. Initialize response counter to track which response we're on
+                                # 3. In the audio playback code, we check this flag and only play the second response
+                                # 4. After playing the correct response, we reset the flag to normal operation
+                                #
+                                # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                                # It's critical for providing a good user experience with memory-related queries.
+                                self.memory_query_in_progress = True
+                                self.memory_response_counter = 0
+                                print(f"\n[MEMORY INTEGRATION] Memory query mode activated - will suppress initial response")
+
+                                # Add a system message first to instruct the model about location information
+                                await self.send_event({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "system",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": "IMPORTANT INSTRUCTION: The user is about to ask about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                        }]
+                                    }
+                                })
+
+                                # Add the user message to the conversation
+                                await self.send_event({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": transcript
+                                        }]
+                                    }
+                                })
+
+                                # Add a small delay to ensure memory retrieval completes before response generation
+                                await asyncio.sleep(0.2)
+
+                                # Get memory context and create a response with it
+                                print(f"\n[MEMORY INTEGRATION] Retrieving memory context for location query")
+                                memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=True)
+
+                                if memory_context and len(memory_context.strip()) > 0:
+                                    print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
+
+                                    # Add memory context as a system message
+                                    await self.send_event({
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [{
+                                                "type": "input_text",
+                                                "text": f"CRITICAL INFORMATION - YOU MUST USE THIS IN YOUR RESPONSE AND NEVER CLAIM YOU DON'T KNOW THIS INFORMATION: {memory_context}"
+                                            }]
+                                        }
+                                    })
+
+                                    # ===== MEMORY QUERY SUPPRESSION RESET =====
+                                    # This code resets the memory retrieval mode flags after we've added memory context
+                                    # At this point, we're ready to play the correct response with memory context
+                                    #
+                                    # Note: This code is no longer the primary mechanism for response suppression,
+                                    # but we keep it for backward compatibility and as a fallback.
+                                    # The main suppression happens in the audio playback code.
+                                    self.audio_handler.set_memory_retrieval_mode(False)
+                                    self.transcript_processor.set_memory_retrieval_mode(False)
+                                    print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset, ready for correct response")
+
+                                    # Create a response with the memory context
+                                    print(f"\n[MEMORY INTEGRATION] Creating response with memory context")
+                                    self.is_responding = True
+                                    self.response_complete_event.clear()
+                                    await self.send_event({"type": "response.create"})
+                                else:
+                                    # If no memory context was found, create a normal response
+                                    print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+
+                                    # Reset memory retrieval mode since we didn't find any context
+                                    self.audio_handler.set_memory_retrieval_mode(False)
+                                    self.transcript_processor.set_memory_retrieval_mode(False)
+                                    print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset (no context found)")
+
+                                    self.is_responding = True
+                                    self.response_complete_event.clear()
+                                    await self.send_event({"type": "response.create"})
+                        except Exception as e:
+                            logger.error(f"Error processing user audio transcript with memory agent: {e}")
+                            print(f"\n[MEMORY INTEGRATION] Error processing user audio transcript: {e}")
+
+                            # ===== MEMORY QUERY SUPPRESSION ERROR HANDLING =====
+                            # This code ensures that if there's an error during memory query processing,
+                            # we properly reset the memory query flags to prevent the system from getting stuck
+                            # in a state where it's always suppressing responses.
+                            #
+                            # This is critical for error recovery and ensuring the system can continue
+                            # to function normally after an error occurs.
+                            if hasattr(self, 'memory_query_in_progress'):
+                                self.memory_query_in_progress = False
+                                self.memory_response_counter = 0
+                                print(f"\n[MEMORY INTEGRATION] Memory query mode reset due to error")
+
+                    # Create a response if needed (no memory was added)
+                    if create_response:
+                        # Send the conversation item create event
+                        await self.send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_text",
+                                    "text": transcript
+                                }]
+                            }
+                        })
+
+                        # Create the response
+                        if not self.is_responding:
+                            self.is_responding = True
+                            self.response_complete_event.clear()
+                            await self.send_event({"type": "response.create"})
+                            print(f"\n[CONVERSATION] Creating response for: '{transcript[:50]}...'")
+
         # Handle errors and reset state if needed
         if event_type == "error":
             error_msg = event.get('error', {}).get('message', 'Unknown error')
@@ -438,10 +617,16 @@ class RealtimeClient:
                     self.current_response_text += delta_text
 
                 # In audio mode, also collect the response text for memory processing
-                elif not hasattr(self, "current_audio_response_text"):
-                    self.current_audio_response_text = delta_text
-                else:
-                    self.current_audio_response_text += delta_text
+                elif self.conversation_mode == "audio":
+                    if not hasattr(self, "current_audio_response_text"):
+                        self.current_audio_response_text = delta_text
+                        print(f"\n[MEMORY INTEGRATION] Started collecting assistant audio response: '{delta_text}'")
+                        logger.info(f"Started collecting assistant audio response text in audio mode")
+                    else:
+                        self.current_audio_response_text += delta_text
+                        # Log periodically to avoid too much output
+                        if len(self.current_audio_response_text) % 100 == 0:
+                            logger.info(f"Collected {len(self.current_audio_response_text)} chars of assistant audio response")
 
         elif event_type == "response.audio.delta":
             # Set responding flag if we receive audio
@@ -471,6 +656,145 @@ class RealtimeClient:
                     # Add to transcript
                     self.transcript_processor.add_user_query(transcript)
 
+                    # Flag to track if we need to create a response
+                    create_response = True
+
+                    # Process with memory agent if enabled
+                    if self.enable_memory and self.memory_integration:
+                        try:
+                            # Process user message with memory agent
+                            asyncio.create_task(self.memory_integration.process_user_message(transcript, self.conversation_mode))
+                            logger.info("Processing user audio transcript with memory agent (final transcript)")
+                            print(f"\n[MEMORY INTEGRATION] Processing user audio transcript with memory agent (final transcript)")
+
+                            # Check if this message might need memory context
+                            # We're being more selective now - only check for memories when it seems relevant
+                            retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(transcript)
+
+                            # Only check for location-related terms if the message is a question or seems to be asking about location
+                            location_terms = ['where', 'live', 'location', 'address', 'city', 'state', 'country', 'from', 'reside']
+                            contains_question = '?' in transcript or any(q in transcript.lower() for q in ['what', 'where', 'when', 'how', 'who', 'why'])
+                            might_need_location = contains_question and any(term in transcript.lower() for term in location_terms)
+
+                            # For location-related queries, we'll handle the response creation differently
+                            # to prevent the "I don't know" followed by "Actually I do know" issue
+                            if retrieval_intent or might_need_location:
+                                if retrieval_intent:
+                                    print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent (final transcript): '{transcript[:50]}...'")
+                                elif might_need_location:
+                                    print(f"\n[MEMORY INTEGRATION] Detected location-related question (final transcript): '{transcript[:50]}...'")
+
+                                # For location queries, we'll skip the normal response creation
+                                # and only create a response after memory retrieval
+                                create_response = False
+
+                                # Print a message to the console to indicate we're waiting for memory retrieval
+                                print(f"\n[MEMORY INTEGRATION] Delaying response for location query until memory retrieval completes")
+
+                                # ===== MEMORY QUERY SUPPRESSION MECHANISM =====
+                                # This is a bespoke solution to fix the "I don't know/Actually I do know" problem
+                                # When a memory-related query is detected, we need to suppress the initial incorrect response
+                                # that would say "I don't know where you live" and only play the second response that has
+                                # the correct memory context.
+                                #
+                                # The approach works as follows:
+                                # 1. Set memory_query_in_progress flag when a memory query is detected
+                                # 2. Initialize response counter to track which response we're on
+                                # 3. In the audio playback code, we check this flag and only play the second response
+                                # 4. After playing the correct response, we reset the flag to normal operation
+                                #
+                                # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                                # It's critical for providing a good user experience with memory-related queries.
+                                self.memory_query_in_progress = True
+                                self.memory_response_counter = 0
+                                print(f"\n[MEMORY INTEGRATION] Memory query mode activated - will suppress initial response")
+
+                                # Add a system message first to instruct the model about location information
+                                await self.send_event({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "system",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": "IMPORTANT INSTRUCTION: The user is about to ask about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                        }]
+                                    }
+                                })
+
+                                # Add the user message to the conversation
+                                await self.send_event({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": transcript
+                                        }]
+                                    }
+                                })
+
+                                # Add a small delay to ensure memory retrieval completes before response generation
+                                await asyncio.sleep(0.2)
+
+                                # Get memory context and create a response with it
+                                print(f"\n[MEMORY INTEGRATION] Retrieving memory context for location query")
+                                memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=True)
+
+                                if memory_context and len(memory_context.strip()) > 0:
+                                    print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
+
+                                    # Add memory context as a system message
+                                    await self.send_event({
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [{
+                                                "type": "input_text",
+                                                "text": f"CRITICAL INFORMATION - YOU MUST USE THIS IN YOUR RESPONSE AND NEVER CLAIM YOU DON'T KNOW THIS INFORMATION: {memory_context}"
+                                            }]
+                                        }
+                                    })
+
+                                    # Create a response with the memory context
+                                    print(f"\n[MEMORY INTEGRATION] Creating response with memory context")
+                                    self.is_responding = True
+                                    self.response_complete_event.clear()
+                                    await self.send_event({"type": "response.create"})
+                                else:
+                                    # If no memory context was found, create a normal response
+                                    print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+                                    self.is_responding = True
+                                    self.response_complete_event.clear()
+                                    await self.send_event({"type": "response.create"})
+                        except Exception as e:
+                            logger.error(f"Error processing user audio transcript with memory agent: {e}")
+                            print(f"\n[MEMORY INTEGRATION] Error processing user audio transcript: {e}")
+
+                    # Create a response if needed (no memory was added)
+                    if create_response:
+                        # Send the conversation item create event
+                        await self.send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{
+                                    "type": "input_text",
+                                    "text": transcript
+                                }]
+                            }
+                        })
+
+                        # Create the response
+                        if not self.is_responding:
+                            self.is_responding = True
+                            self.response_complete_event.clear()
+                            await self.send_event({"type": "response.create"})
+                            print(f"\n[CONVERSATION] Creating response for final transcript: '{transcript[:50]}...'")
+
         # Handle conversation item input audio transcription events
         elif event_type == "conversation.item.input_audio_transcription.completed":
             if "item" in event and "content" in event["item"]:
@@ -481,6 +805,174 @@ class RealtimeClient:
                             print(f"\nTranscribed: {transcript}")
                             # Add to transcript
                             self.transcript_processor.add_user_query(transcript)
+
+                            # Flag to track if we need to create a response
+                            create_response = True
+
+                            # Process with memory agent if enabled
+                            if self.enable_memory and self.memory_integration:
+                                try:
+                                    # Process user message with memory agent
+                                    asyncio.create_task(self.memory_integration.process_user_message(transcript, self.conversation_mode))
+                                    logger.info("Processing user audio transcript with memory agent (conversation item)")
+                                    print(f"\n[MEMORY INTEGRATION] Processing user audio transcript with memory agent (conversation item)")
+
+                                    # Check if this message might need memory context
+                                    # We're being more selective now - only check for memories when it seems relevant
+                                    retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(transcript)
+
+                                    # Only check for location-related terms if the message is a question or seems to be asking about location
+                                    location_terms = ['where', 'live', 'location', 'address', 'city', 'state', 'country', 'from', 'reside']
+                                    contains_question = '?' in transcript or any(q in transcript.lower() for q in ['what', 'where', 'when', 'how', 'who', 'why'])
+                                    might_need_location = contains_question and any(term in transcript.lower() for term in location_terms)
+
+                                    # For location-related queries, we'll handle the response creation differently
+                                    # to prevent the "I don't know" followed by "Actually I do know" issue
+                                    if retrieval_intent or might_need_location:
+                                        if retrieval_intent:
+                                            print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent (conversation item): '{transcript[:50]}...'")
+                                        elif might_need_location:
+                                            print(f"\n[MEMORY INTEGRATION] Detected location-related question (conversation item): '{transcript[:50]}...'")
+
+                                        # For location queries, we'll skip the normal response creation
+                                        # and only create a response after memory retrieval
+                                        create_response = False
+
+                                        # Print a message to the console to indicate we're waiting for memory retrieval
+                                        print(f"\n[MEMORY INTEGRATION] Delaying response for location query until memory retrieval completes")
+
+                                        # ===== MEMORY QUERY SUPPRESSION MECHANISM =====
+                                        # This is a bespoke solution to fix the "I don't know/Actually I do know" problem
+                                        # When a memory-related query is detected, we need to suppress the initial incorrect response
+                                        # that would say "I don't know where you live" and only play the second response that has
+                                        # the correct memory context.
+                                        #
+                                        # The approach works as follows:
+                                        # 1. Set memory_query_in_progress flag when a memory query is detected
+                                        # 2. Initialize response counter to track which response we're on
+                                        # 3. In the audio playback code, we check this flag and only play the second response
+                                        # 4. After playing the correct response, we reset the flag to normal operation
+                                        #
+                                        # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                                        # It's critical for providing a good user experience with memory-related queries.
+                                        self.memory_query_in_progress = True
+                                        self.memory_response_counter = 0
+                                        print(f"\n[MEMORY INTEGRATION] Memory query mode activated - will suppress initial response")
+
+                                        # Add a system message first to instruct the model about location information
+                                        await self.send_event({
+                                            "type": "conversation.item.create",
+                                            "item": {
+                                                "type": "message",
+                                                "role": "system",
+                                                "content": [{
+                                                    "type": "input_text",
+                                                    "text": "IMPORTANT INSTRUCTION: The user is about to ask about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                                }]
+                                            }
+                                        })
+
+                                        # Add the user message to the conversation
+                                        await self.send_event({
+                                            "type": "conversation.item.create",
+                                            "item": {
+                                                "type": "message",
+                                                "role": "user",
+                                                "content": [{
+                                                    "type": "input_text",
+                                                    "text": transcript
+                                                }]
+                                            }
+                                        })
+
+                                        # Add a small delay to ensure memory retrieval completes before response generation
+                                        await asyncio.sleep(0.2)
+
+                                        # Get memory context and create a response with it
+                                        print(f"\n[MEMORY INTEGRATION] Retrieving memory context for location query")
+                                        memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=True)
+
+                                        if memory_context and len(memory_context.strip()) > 0:
+                                            print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
+
+                                            # Add memory context as a system message
+                                            await self.send_event({
+                                                "type": "conversation.item.create",
+                                                "item": {
+                                                    "type": "message",
+                                                    "role": "system",
+                                                    "content": [{
+                                                        "type": "input_text",
+                                                        "text": f"CRITICAL INFORMATION - YOU MUST USE THIS IN YOUR RESPONSE AND NEVER CLAIM YOU DON'T KNOW THIS INFORMATION: {memory_context}"
+                                                    }]
+                                                }
+                                            })
+
+                                            # ===== MEMORY QUERY SUPPRESSION RESET =====
+                                            # This code resets the memory retrieval mode flags after we've added memory context
+                                            # At this point, we're ready to play the correct response with memory context
+                                            #
+                                            # Note: This code is no longer the primary mechanism for response suppression,
+                                            # but we keep it for backward compatibility and as a fallback.
+                                            # The main suppression happens in the audio playback code.
+                                            self.audio_handler.set_memory_retrieval_mode(False)
+                                            self.transcript_processor.set_memory_retrieval_mode(False)
+                                            print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset, ready for correct response")
+
+                                            # Create a response with the memory context
+                                            print(f"\n[MEMORY INTEGRATION] Creating response with memory context")
+                                            self.is_responding = True
+                                            self.response_complete_event.clear()
+                                            await self.send_event({"type": "response.create"})
+                                        else:
+                                            # If no memory context was found, create a normal response
+                                            print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+
+                                            # Reset memory retrieval mode since we didn't find any context
+                                            self.audio_handler.set_memory_retrieval_mode(False)
+                                            self.transcript_processor.set_memory_retrieval_mode(False)
+                                            print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset (no context found)")
+
+                                            self.is_responding = True
+                                            self.response_complete_event.clear()
+                                            await self.send_event({"type": "response.create"})
+                                except Exception as e:
+                                    logger.error(f"Error processing user audio transcript with memory agent: {e}")
+                                    print(f"\n[MEMORY INTEGRATION] Error processing user audio transcript: {e}")
+
+                                    # ===== MEMORY QUERY SUPPRESSION ERROR HANDLING =====
+                                    # This code ensures that if there's an error during memory query processing,
+                                    # we properly reset the memory query flags to prevent the system from getting stuck
+                                    # in a state where it's always suppressing responses.
+                                    #
+                                    # This is critical for error recovery and ensuring the system can continue
+                                    # to function normally after an error occurs.
+                                    if hasattr(self, 'memory_query_in_progress'):
+                                        self.memory_query_in_progress = False
+                                        self.memory_response_counter = 0
+                                        print(f"\n[MEMORY INTEGRATION] Memory query mode reset due to error")
+
+                            # Create a response if needed (no memory was added)
+                            if create_response:
+                                # Send the conversation item create event
+                                await self.send_event({
+                                    "type": "conversation.item.create",
+                                    "item": {
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{
+                                            "type": "input_text",
+                                            "text": transcript
+                                        }]
+                                    }
+                                })
+
+                                # Create the response
+                                if not self.is_responding:
+                                    self.is_responding = True
+                                    self.response_complete_event.clear()
+                                    await self.send_event({"type": "response.create"})
+                                    print(f"\n[CONVERSATION] Creating response for conversation item: '{transcript[:50]}...'")
 
         elif event_type == "response.audio.done":
             # Play the complete audio response
@@ -503,7 +995,40 @@ class RealtimeClient:
                         logger.error(f"Error sending model chunk to sentiment queue: {e}")
                 # ---------------------------------------------------
 
-                self.audio_handler.play_audio(self.audio_buffer)
+                # ===== MEMORY QUERY RESPONSE SUPPRESSION IMPLEMENTATION =====
+                # This is the core of our solution to the "I don't know/Actually I do know" problem
+                # When processing a memory-related query, the model first generates an incorrect response
+                # saying it doesn't know, then after receiving memory context, it generates a correct response.
+                #
+                # This code ensures that:
+                # 1. We track which response we're on using memory_response_counter
+                # 2. We SKIP the first response completely (the incorrect one)
+                # 3. We ONLY play the second response (the correct one with memory context)
+                # 4. We reset the flags after playing the correct response
+                #
+                # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                # It's critical for providing a good user experience with memory-related queries.
+                if hasattr(self, 'memory_query_in_progress') and self.memory_query_in_progress:
+                    # Increment the response counter
+                    if not hasattr(self, 'memory_response_counter'):
+                        self.memory_response_counter = 0
+                    self.memory_response_counter += 1
+
+                    # Only play the second response (the corrected one with memory context)
+                    if self.memory_response_counter >= 2:
+                        print(f"\n[MEMORY INTEGRATION] Playing corrected response with memory context")
+                        self.audio_handler.play_audio(self.audio_buffer)
+                        # Reset the memory query flag after playing the corrected response
+                        self.memory_query_in_progress = False
+                        self.memory_response_counter = 0
+                    else:
+                        print(f"\n[MEMORY INTEGRATION] Suppressing initial incorrect response")
+                        # Don't play the first response - this is intentional!
+                        # The first response would say "I don't know" which is incorrect
+                else:
+                    # Normal response, play it
+                    self.audio_handler.play_audio(self.audio_buffer)
+
                 self.audio_buffer = b'' # Clear buffer AFTER sending and playing
 
             # Final check to play any buffered audio that wasn't caught by response.audio.done
@@ -526,7 +1051,34 @@ class RealtimeClient:
                         logger.error(f"Error sending final model chunk to sentiment queue: {e}")
                 # -------------------------------------------------------------
 
-                self.audio_handler.play_audio(self.audio_buffer)
+                # ===== MEMORY QUERY RESPONSE SUPPRESSION IMPLEMENTATION (SECOND INSTANCE) =====
+                # This is a duplicate of the code above, but for the remaining audio buffer
+                # It's important to maintain both instances to ensure complete suppression
+                # of incorrect responses in all audio playback paths.
+                #
+                # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                # It's critical for providing a good user experience with memory-related queries.
+                if hasattr(self, 'memory_query_in_progress') and self.memory_query_in_progress:
+                    # Increment the response counter
+                    if not hasattr(self, 'memory_response_counter'):
+                        self.memory_response_counter = 0
+                    self.memory_response_counter += 1
+
+                    # Only play the second response (the corrected one with memory context)
+                    if self.memory_response_counter >= 2:
+                        print(f"\n[MEMORY INTEGRATION] Playing corrected response with memory context")
+                        self.audio_handler.play_audio(self.audio_buffer)
+                        # Reset the memory query flag after playing the corrected response
+                        self.memory_query_in_progress = False
+                        self.memory_response_counter = 0
+                    else:
+                        print(f"\n[MEMORY INTEGRATION] Suppressing initial incorrect response")
+                        # Don't play the first response - this is intentional!
+                        # The first response would say "I don't know" which is incorrect
+                else:
+                    # Normal response, play it
+                    self.audio_handler.play_audio(self.audio_buffer)
+
                 self.audio_buffer = b'' # Clear buffer AFTER sending and playing
 
             # Handle chat mode response completion
@@ -552,6 +1104,8 @@ class RealtimeClient:
                         # Add to transcript first
                         self.transcript_processor.add_assistant_response(self.current_audio_response_text)
 
+                        print(f"\n[MEMORY INTEGRATION] Processing assistant audio response with memory agent: '{self.current_audio_response_text[:100]}...'")
+
                         # Process with memory agent
                         asyncio.create_task(self.memory_integration.process_assistant_message(
                             self.current_audio_response_text,
@@ -560,6 +1114,16 @@ class RealtimeClient:
                         logger.info("Processing audio response with memory agent")
                     except Exception as e:
                         logger.error(f"Error processing audio response with memory agent: {e}")
+                        print(f"\n[MEMORY INTEGRATION] Error processing assistant audio response: {e}")
+                else:
+                    # Log why we're not processing
+                    if not self.enable_memory:
+                        print("\n[MEMORY INTEGRATION] Memory system is disabled for audio mode")
+                    elif not self.memory_integration:
+                        print("\n[MEMORY INTEGRATION] Memory integration is not initialized for audio mode")
+                    elif not self.current_audio_response_text:
+                        print("\n[MEMORY INTEGRATION] No assistant audio response text to process")
+                    logger.warning(f"Not processing assistant audio response: enable_memory={self.enable_memory}, memory_integration={self.memory_integration is not None}, response_text_length={len(self.current_audio_response_text) if hasattr(self, 'current_audio_response_text') else 0}")
 
                 # Reset the current audio response text
                 self.current_audio_response_text = ""
@@ -598,6 +1162,19 @@ class RealtimeClient:
             self.is_responding = False
             self.response_complete_event.set()
             print("\nResponse complete. You can speak again or type a command.")
+
+            # Check if we're waiting to add memory context
+            if hasattr(self, 'waiting_to_add_memory') and self.waiting_to_add_memory and hasattr(self, 'memory_context_to_add'):
+                print(f"\n[MEMORY INTEGRATION] Adding delayed memory context as follow-up")
+
+                # Reset the flag
+                self.waiting_to_add_memory = False
+
+                # Add the memory context as a system message
+                memory_context = self.memory_context_to_add
+
+                # Create a task to add the memory context and generate a follow-up response
+                asyncio.create_task(self._add_followup_memory_response(memory_context))
 
         # Handle WebRTC/Realtime API voice activity events
         elif event_type == "input_audio_buffer.speech_started":
@@ -701,8 +1278,11 @@ class RealtimeClient:
         # Add memory context if enabled
         if self.enable_memory and self.memory_integration:
             try:
+                print(f"\n[MEMORY INTEGRATION] Retrieving memory context for: '{text[:50]}...'")
+                logger.info(f"Retrieving memory context in {self.conversation_mode} mode")
                 memory_context = await self.memory_integration.get_context_with_memories(text, retrieval_intent)
                 if memory_context:
+                    print(f"\n[MEMORY INTEGRATION] Adding memory context to conversation: '{memory_context[:100]}...'")
                     # Add memory context as a system message
                     await self.send_event({
                         "type": "conversation.item.create",
@@ -716,8 +1296,12 @@ class RealtimeClient:
                         }
                     })
                     logger.info("Added memory context to conversation")
+                else:
+                    print(f"\n[MEMORY INTEGRATION] No relevant memory context found for: '{text[:50]}...'")
+                    logger.info("No relevant memory context found")
             except Exception as e:
                 logger.error(f"Error adding memory context: {e}")
+                print(f"\n[MEMORY INTEGRATION] Error retrieving memory context: {e}")
 
         # Send the user message
         await self.send_event({
@@ -738,6 +1322,143 @@ class RealtimeClient:
             await self.send_event({"type": "response.create"})
         else:
             logger.warning("Not sending response.create as another response is in progress")
+
+    async def _add_followup_memory_response(self, memory_context):
+        """Add a follow-up response with memory context after the initial response completes.
+
+        Args:
+            memory_context (str): The memory context to add to the follow-up response
+        """
+        try:
+            # Add a small delay to ensure the previous response is fully processed
+            await asyncio.sleep(0.5)
+
+            # Add memory context as a system message with high priority
+            print(f"\n[MEMORY INTEGRATION] Sending memory context as system message for follow-up")
+            await self.send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "system",
+                    "content": [{
+                        "type": "input_text",
+                        "text": f"CRITICAL INFORMATION - YOU MUST USE THIS IN YOUR RESPONSE AND NEVER CLAIM YOU DON'T KNOW THIS INFORMATION: {memory_context}"
+                    }]
+                }
+            })
+            logger.info("Added memory context for follow-up response")
+
+            # Add a delay to ensure the memory context is processed
+            await asyncio.sleep(0.5)
+
+            # Create a new response that will use the memory context
+            print(f"\n[MEMORY INTEGRATION] Creating follow-up response with memory context")
+            self.is_responding = True
+            self.response_complete_event.clear()
+
+            # Create a special follow-up message that sounds natural
+            # This is a more generic follow-up that doesn't assume the context is about Seattle
+            synthetic_message = "Is there anything else you'd like to tell me?"
+
+            # Add the synthetic message to the transcript first
+            print(f"\n[MEMORY INTEGRATION] Adding synthetic follow-up message to transcript: '{synthetic_message}'")
+            self.transcript_processor.add_user_query(f"[System-generated follow-up]: {synthetic_message}")
+
+            # Then send it to the API
+            await self.send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": synthetic_message
+                    }]
+                }
+            })
+
+            # Create the response
+            await self.send_event({"type": "response.create"})
+
+            return True
+        except Exception as e:
+            logger.error(f"Error adding follow-up memory response: {e}")
+            print(f"\n[MEMORY INTEGRATION] Error adding follow-up memory response: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
+            return False
+
+    async def _add_memory_context_for_audio(self, text, force_retrieval=False):
+        """Retrieve and add memory context for audio transcripts.
+
+        Args:
+            text (str): The user's audio transcript
+            force_retrieval (bool): Whether to force memory retrieval even if no intent is detected
+        """
+        if not self.enable_memory or not self.memory_integration:
+            return False
+
+        try:
+            print(f"\n[MEMORY INTEGRATION] Retrieving memory context for audio transcript: '{text[:50]}...'")
+            logger.info(f"Retrieving memory context for audio transcript in {self.conversation_mode} mode")
+
+            # Only force retrieval when explicitly requested
+            # This makes memory retrieval more selective and contextual
+            memory_context = await self.memory_integration.get_context_with_memories(text, force_retrieval=force_retrieval)
+
+            if memory_context and len(memory_context.strip()) > 0:
+                print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
+                logger.info("Found relevant memory context for audio transcript")
+
+                # Check if we're currently responding
+                if self.is_responding:
+                    # Instead of cancelling, wait for the current response to complete
+                    print(f"\n[MEMORY INTEGRATION] Waiting for current response to complete before adding memory context")
+
+                    # Set a flag to indicate we're waiting to add memory context
+                    self.waiting_to_add_memory = True
+                    self.memory_context_to_add = memory_context
+
+                    # Return true to indicate memory context will be added (but after current response)
+                    return True
+
+                # If we're not currently responding, add the memory context now
+                # Add memory context as a system message with high priority
+                print(f"\n[MEMORY INTEGRATION] Sending memory context as system message")
+                await self.send_event({
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "message",
+                        "role": "system",
+                        "content": [{
+                            "type": "input_text",
+                            "text": f"CRITICAL INFORMATION - YOU MUST USE THIS IN YOUR RESPONSE AND NEVER CLAIM YOU DON'T KNOW THIS INFORMATION: {memory_context}"
+                        }]
+                    }
+                })
+                logger.info("Added memory context to audio conversation")
+
+                # Add a delay to ensure the memory context is processed
+                await asyncio.sleep(0.5)
+
+                # Create a new response to ensure the memory context is used
+                print(f"\n[MEMORY INTEGRATION] Creating new response with memory context")
+                self.is_responding = True
+                self.response_complete_event.clear()
+                await self.send_event({"type": "response.create"})
+
+                # Return true to indicate memory context was added
+                return True
+            else:
+                print(f"\n[MEMORY INTEGRATION] No relevant memory context found for audio transcript: '{text[:50]}...'")
+                logger.info("No relevant memory context found for audio transcript")
+                return False
+        except Exception as e:
+            logger.error(f"Error adding memory context for audio transcript: {e}")
+            print(f"\n[MEMORY INTEGRATION] Error retrieving memory context for audio transcript: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
+            return False
 
     async def _process_text_for_sentiment(self, text, source):
         """Process text for sentiment analysis.
@@ -931,7 +1652,38 @@ class RealtimeClient:
             nonlocal stop_recording, quit_requested
             user_input = await asyncio.to_thread(input)
             if user_input.lower() == 'q':
+                print("\n=== Quit requested - EMERGENCY STOP ===")
                 quit_requested = True
+
+                # Set the shutdown flag to prevent any further event processing
+                self.shutdown_in_progress = True
+
+                # EMERGENCY STOP: Forcefully terminate all audio processes immediately
+                print("EMERGENCY STOP: Forcefully terminating all audio processes...")
+                self.audio_handler.emergency_stop()
+
+                # Save the transcript immediately
+                print("Saving transcript...")
+                transcript_file = self.transcript_processor.save_transcript(force=True)
+                if transcript_file:
+                    print(f"Transcript saved to: {transcript_file}")
+
+                # Immediately cancel any ongoing response
+                if self.is_responding:
+                    try:
+                        # Force reset the response state
+                        self.is_responding = False
+                        self.response_complete_event.set()
+
+                        # Try to cancel the response via WebSocket
+                        if self.ws:
+                            try:
+                                await self.send_event({"type": "response.cancel"})
+                            except Exception:
+                                # Ignore errors during shutdown
+                                pass
+                    except Exception as e:
+                        logger.error(f"Error cancelling response during quit: {e}")
             stop_recording = True
 
         async def display_transcript_updates():
@@ -1162,7 +1914,56 @@ class RealtimeClient:
             nonlocal stop_recording, quit_requested
             user_input = await asyncio.to_thread(input)
             if user_input.lower() == 'q':
+                print("\n=== Quit requested - stopping all processes ===")
                 quit_requested = True
+
+                # Set the shutdown flag to prevent any further event processing
+                self.shutdown_in_progress = True
+
+                # EMERGENCY STOP: Forcefully terminate all audio processes immediately
+                print("EMERGENCY STOP: Forcefully terminating all audio processes...")
+                self.audio_handler.emergency_stop()
+
+                # Update the transcript one last time before stopping
+                print("Finalizing transcript...")
+                self.transcript_processor.update_transcript()
+
+                # Add a small delay to ensure any pending transcript updates are processed
+                time.sleep(0.5)
+
+                # Now stop the transcript processor
+                print("Stopping transcript processor...")
+                self.transcript_processor.stop()
+
+                # Save the transcript immediately
+                print("Saving transcript...")
+                transcript_file = self.transcript_processor.save_transcript(force=True)
+                if transcript_file:
+                    print(f"Transcript saved to: {transcript_file}")
+
+                # Clear any buffered audio
+                self.audio_buffer = b''
+
+                # Immediately cancel any ongoing response
+                if self.is_responding:
+                    try:
+                        print("Cancelling any ongoing responses...")
+                        # Force reset the response state
+                        self.is_responding = False
+                        self.response_complete_event.set()
+
+                        # Try to cancel the response via WebSocket
+                        if self.ws:
+                            try:
+                                await self.send_event({"type": "response.cancel"})
+                            except Exception:
+                                # Ignore errors during shutdown
+                                pass
+
+                        # Reset audio state
+                        self.reset_audio_state()
+                    except Exception as e:
+                        logger.error(f"Error cancelling response during quit: {e}")
             stop_recording = True
 
         async def display_transcript_updates():
@@ -1295,6 +2096,18 @@ class RealtimeClient:
 
     async def run(self):
         """Main loop to handle user input and interact with the WebSocket server or chat API."""
+        # Check memory integration status
+        if self.enable_memory:
+            if self.memory_integration:
+                print(f"\n[MEMORY SYSTEM] Memory integration is enabled for {self.conversation_mode} mode")
+                logger.info(f"Memory integration is enabled for {self.conversation_mode} mode")
+            else:
+                print("\n[MEMORY SYSTEM] Memory integration is enabled but not initialized properly")
+                logger.warning("Memory integration is enabled but not initialized properly")
+        else:
+            print("\n[MEMORY SYSTEM] Memory integration is disabled")
+            logger.info("Memory integration is disabled")
+
         # Connect to WebSocket only in audio mode
         connection_success = True
         if self.conversation_mode == "audio":
@@ -1404,6 +2217,48 @@ class RealtimeClient:
                 # In chat mode, treat any input as a message unless it's a quit command
                 if self.conversation_mode == "chat":
                     if command.lower() == 'q':
+                        print("\n=== Quit command received - stopping all processes ===")
+
+                        # Set the shutdown flag to prevent any further event processing
+                        self.shutdown_in_progress = True
+
+                        # EMERGENCY STOP: Forcefully terminate all audio processes immediately
+                        print("EMERGENCY STOP: Forcefully terminating all audio processes...")
+                        self.audio_handler.emergency_stop()
+
+                        # Update the transcript one last time before stopping
+                        print("Finalizing transcript...")
+                        self.transcript_processor.update_transcript()
+
+                        # Add a small delay to ensure any pending transcript updates are processed
+                        time.sleep(0.5)
+
+                        # Now stop the transcript processor
+                        print("Stopping transcript processor...")
+                        self.transcript_processor.stop()
+
+                        # Save the transcript immediately
+                        print("Saving transcript...")
+                        transcript_file = self.transcript_processor.save_transcript(force=True)
+                        if transcript_file:
+                            print(f"Transcript saved to: {transcript_file}")
+
+                        # Clear any buffered audio
+                        self.audio_buffer = b''
+
+                        # Immediately cancel any ongoing response
+                        if self.is_responding:
+                            try:
+                                print("Cancelling any ongoing responses...")
+                                # Force reset the response state
+                                self.is_responding = False
+                                self.response_complete_event.set()
+
+                                # In chat mode, we don't have a WebSocket, so just reset the state
+                                self.reset_audio_state()
+                            except Exception as e:
+                                logger.error(f"Error cancelling response during quit: {e}")
+
                         # Run memory deduplication if memory is enabled
                         if self.enable_memory and self.memory_integration:
                             try:
@@ -1425,6 +2280,55 @@ class RealtimeClient:
 
                 if command.lower() == 'q':
                     # logger.info("Quit command received - exiting application")
+                    print("\n=== Quit command received - stopping all processes ===")
+
+                    # Set the shutdown flag to prevent any further event processing
+                    self.shutdown_in_progress = True
+
+                    # EMERGENCY STOP: Forcefully terminate all audio processes immediately
+                    print("EMERGENCY STOP: Forcefully terminating all audio processes...")
+                    self.audio_handler.emergency_stop()
+
+                    # Update the transcript one last time before stopping
+                    print("Finalizing transcript...")
+                    self.transcript_processor.update_transcript()
+
+                    # Add a small delay to ensure any pending transcript updates are processed
+                    time.sleep(0.5)
+
+                    # Now stop the transcript processor
+                    print("Stopping transcript processor...")
+                    self.transcript_processor.stop()
+
+                    # Save the transcript immediately
+                    print("Saving transcript...")
+                    transcript_file = self.transcript_processor.save_transcript(force=True)
+                    if transcript_file:
+                        print(f"Transcript saved to: {transcript_file}")
+
+                    # Clear any buffered audio
+                    self.audio_buffer = b''
+
+                    # Immediately cancel any ongoing response
+                    if self.is_responding:
+                        try:
+                            print("Cancelling any ongoing responses...")
+                            # Force reset the response state
+                            self.is_responding = False
+                            self.response_complete_event.set()
+
+                            # Try to cancel the response via WebSocket
+                            if self.ws:
+                                try:
+                                    await self.send_event({"type": "response.cancel"})
+                                except Exception:
+                                    # Ignore errors during shutdown
+                                    pass
+
+                            # Reset audio state
+                            self.reset_audio_state()
+                        except Exception as e:
+                            logger.error(f"Error cancelling response during quit: {e}")
 
                     # Run memory deduplication if memory is enabled
                     if self.enable_memory and self.memory_integration:
@@ -1495,6 +2399,56 @@ class RealtimeClient:
                         if quit_requested:
                             # User wants to quit during manual recording
                             # logger.info("Quit requested during manual recording mode")
+
+                            print("\n=== Quit command received - stopping all processes ===")
+
+                            # Set the shutdown flag to prevent any further event processing
+                            self.shutdown_in_progress = True
+
+                            # EMERGENCY STOP: Forcefully terminate all audio processes immediately
+                            print("EMERGENCY STOP: Forcefully terminating all audio processes...")
+                            self.audio_handler.emergency_stop()
+
+                            # Update the transcript one last time before stopping
+                            print("Finalizing transcript...")
+                            self.transcript_processor.update_transcript()
+
+                            # Add a small delay to ensure any pending transcript updates are processed
+                            time.sleep(0.5)
+
+                            # Now stop the transcript processor
+                            print("Stopping transcript processor...")
+                            self.transcript_processor.stop()
+
+                            # Save the transcript immediately
+                            print("Saving transcript...")
+                            transcript_file = self.transcript_processor.save_transcript(force=True)
+                            if transcript_file:
+                                print(f"Transcript saved to: {transcript_file}")
+
+                            # Clear any buffered audio
+                            self.audio_buffer = b''
+
+                            # Immediately cancel any ongoing response
+                            if self.is_responding:
+                                try:
+                                    print("Cancelling any ongoing responses...")
+                                    # Force reset the response state
+                                    self.is_responding = False
+                                    self.response_complete_event.set()
+
+                                    # Try to cancel the response via WebSocket
+                                    if self.ws:
+                                        try:
+                                            await self.send_event({"type": "response.cancel"})
+                                        except Exception:
+                                            # Ignore errors during shutdown
+                                            pass
+
+                                    # Reset audio state
+                                    self.reset_audio_state()
+                                except Exception as e:
+                                    logger.error(f"Error cancelling response during quit: {e}")
 
                             # Run memory deduplication if memory is enabled
                             if self.enable_memory and self.memory_integration:
@@ -1596,6 +2550,13 @@ class RealtimeClient:
             import traceback
             logger.error(traceback.format_exc())
         finally:
+            # Update the transcript one last time before saving
+            print("Finalizing transcript...")
+            self.transcript_processor.update_transcript()
+
+            # Add a small delay to ensure any pending transcript updates are processed
+            time.sleep(0.5)
+
             # Save transcript before exiting (force=True to ensure it's saved)
             print("Saving transcript and exiting...")
             transcript_file = self.transcript_processor.save_transcript(force=True)
@@ -1720,8 +2681,9 @@ class RealtimeClient:
             self.is_responding = False
             self.response_complete_event.set()
             self.audio_buffer = b''  # Clear any buffered audio
-            # Stop any ongoing audio playback
-            self.audio_handler.stop_playback()
+
+            # Use emergency stop to forcefully terminate all audio processes
+            self.audio_handler.emergency_stop()
 
             # Reset current response text if in chat mode
             if self.conversation_mode == "chat" and hasattr(self, "current_response_text"):

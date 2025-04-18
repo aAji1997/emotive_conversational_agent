@@ -94,7 +94,10 @@ class MemoryIntegration:
             message: The user's message
             conversation_mode: 'audio' or 'chat'
         """
+        print(f"\n[MEMORY AGENT] Processing user message in {conversation_mode} mode: '{message[:50]}...'")
+        logger.info(f"Processing user message in {conversation_mode} mode")
         await self.memory_agent.process_message(message, "user", conversation_mode)
+        print(f"\n[MEMORY AGENT] Finished processing user message in {conversation_mode} mode")
 
     async def process_assistant_message(self, message: str, conversation_mode: str) -> None:
         """Process an assistant message and store it in memory if relevant.
@@ -103,6 +106,9 @@ class MemoryIntegration:
             message: The assistant's message
             conversation_mode: 'audio' or 'chat'
         """
+        print(f"\n[MEMORY AGENT] Processing assistant message in {conversation_mode} mode: '{message[:50]}...'")
+        logger.info(f"Processing assistant message in {conversation_mode} mode")
+
         # Check if the message contains phrases indicating memory storage or retrieval intent
         storage_intent = self._detect_memory_storage_intent(message)
         retrieval_intent = self._detect_memory_retrieval_intent(message)
@@ -110,15 +116,20 @@ class MemoryIntegration:
         # Process the message with the memory agent
         if storage_intent:
             # If storage intent is detected, use a special flag to prioritize storage
+            print(f"\n[MEMORY AGENT] Detected memory storage intent in assistant message")
             await self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_consideration=True)
             logger.info("Detected memory storage intent in assistant message")
         elif retrieval_intent:
             # If retrieval intent is detected, use a special flag to prioritize retrieval
+            print(f"\n[MEMORY AGENT] Detected memory retrieval intent in assistant message")
             await self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_retrieval=True)
             logger.info("Detected memory retrieval intent in assistant message")
         else:
             # Normal processing
+            print(f"\n[MEMORY AGENT] No specific intent detected, processing normally")
             await self.memory_agent.process_message(message, "assistant", conversation_mode)
+
+        print(f"\n[MEMORY AGENT] Finished processing assistant message in {conversation_mode} mode")
 
     async def get_context_with_memories(self, current_message: str, force_retrieval: bool = False) -> str:
         """Get relevant memories for the current message and format them for context.
@@ -136,6 +147,14 @@ class MemoryIntegration:
                 force_retrieval = self._detect_memory_retrieval_intent(current_message)
                 if force_retrieval:
                     logger.info("Detected memory retrieval intent in message for context")
+                    print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent in message: '{current_message[:50]}...'")
+
+            # For location-related queries, always force retrieval
+            location_terms = ["where", "live", "location", "address", "city", "state", "country", "from", "reside"]
+            if any(term in current_message.lower() for term in location_terms):
+                force_retrieval = True
+                print(f"\n[MEMORY INTEGRATION] Location-related query detected, forcing memory retrieval: '{current_message[:50]}...'")
+                logger.info("Location-related query detected, forcing memory retrieval")
 
             # Create a dedicated session for this operation
             session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
@@ -145,6 +164,7 @@ class MemoryIntegration:
             session.state["force_memory_retrieval"] = force_retrieval
 
             # Get relevant memories using the memory agent
+            print(f"\n[MEMORY INTEGRATION] Getting relevant memories for: '{current_message[:50]}...'")
             relevant_memories = await self.memory_agent.get_relevant_memories(current_message, force_retrieval)
 
             # Format memories for context, indicating if retrieval was explicitly attempted
@@ -157,11 +177,16 @@ class MemoryIntegration:
                 print(f"\n[MEMORY RETRIEVAL] Retrieved {len(relevant_memories)} memories for user {self.user_id or 'None'}:")
                 for i, memory in enumerate(relevant_memories):
                     print(f"  {i+1}. {memory.get('content')} (Category: {memory.get('category', 'unknown')})")
+                print(f"\n[MEMORY INTEGRATION] Memory context: '{memory_context[:100]}...'")
             else:
                 print(f"\n[MEMORY RETRIEVAL] No memories found for user {self.user_id or 'None'} matching: {current_message[:50]}...")
+                print(f"\n[MEMORY INTEGRATION] No memory context to add")
             return memory_context
         except Exception as e:
             logger.error(f"Error getting memory context: {e}")
+            print(f"\n[MEMORY INTEGRATION] Error getting memory context: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
             return ""  # Return empty string on error
         finally:
             # Clean up the session
@@ -400,29 +425,79 @@ class MemoryIntegration:
         # Convert message to lowercase for case-insensitive matching
         message_lower = message.lower()
 
-        # Check if the message is explicitly asking about location
-        location_phrases = ["where you live", "your location", "where you are", "where you're from",
-                           "where you are from", "where you reside", "where you're located"]
+        # Check for common location-related questions that might be asked in voice mode
+        # These are more flexible patterns to match voice transcripts
+        location_patterns = [
+            "know where i live",
+            "know where i am",
+            "know my location",
+            "know my address",
+            "know where i reside",
+            "know where i'm from",
+            "know where i'm located",
+            "remember where i live",
+            "remember my location",
+            "remember where i'm from",
+            "remember my address",
+            "you know where i live",
+            "you know my location",
+            "you know my address",
+            "you know where i'm from",
+            "you know where i reside",
+            "you know where i'm located",
+            "do you know where i live",
+            "do you know my location",
+            "do you know my address",
+            "do you know where i'm from",
+            "do you remember where i live",
+            "do you remember my location",
+            "do you remember my address",
+            "where do i live",
+            "where am i from",
+            "where am i located",
+            "where is my home",
+            "what's my location",
+            "what is my location",
+            "what's my address",
+            "what is my address",
+            "what city do i live in",
+            "what city am i from",
+            "what city am i in",
+            "what state do i live in",
+            "what state am i from",
+            "what state am i in",
+            "what country do i live in",
+            "what country am i from",
+            "what country am i in"
+        ]
 
-        for phrase in location_phrases:
-            if phrase in message_lower:
-                print(f"\n[MEMORY RETRIEVAL] Location-related retrieval intent detected: '{phrase}' in '{message[:50]}...'")
-                logger.info(f"Location-related memory retrieval intent detected: '{phrase}'")
+        # Check for location patterns first (more specific)
+        for pattern in location_patterns:
+            if pattern in message_lower:
+                print(f"\n[MEMORY RETRIEVAL] Location question detected: '{pattern}' in '{message[:50]}...'")
+                logger.info(f"Location question detected: '{pattern}'")
                 return True
 
-        # Check if any of the general phrases are in the message
+        # Check if the message contains 'where' and 'live', 'reside', etc.
+        if ("where" in message_lower and
+            ("live" in message_lower or "from" in message_lower or "located" in message_lower or
+             "location" in message_lower or "address" in message_lower or "reside" in message_lower)):
+            print(f"\n[MEMORY RETRIEVAL] Location question detected in: '{message[:50]}...'")
+            logger.info(f"Location question detected in message")
+            return True
+
+        # Check if the message contains 'know where' pattern (common in voice transcripts)
+        if ("know where" in message_lower or "remember where" in message_lower):
+            print(f"\n[MEMORY RETRIEVAL] Knowledge question detected in: '{message[:50]}...'")
+            logger.info(f"Knowledge question detected in message")
+            return True
+
+        # Check for general retrieval phrases
         for phrase in retrieval_phrases:
             if phrase in message_lower:
                 print(f"\n[MEMORY RETRIEVAL] Memory retrieval intent detected: '{phrase}' in '{message[:50]}...'")
                 logger.info(f"Memory retrieval intent detected: '{phrase}'")
                 return True
-
-        # Check if the message is a direct question about the user's location
-        if ("where" in message_lower and
-            ("live" in message_lower or "from" in message_lower or "located" in message_lower or "location" in message_lower)):
-            print(f"\n[MEMORY RETRIEVAL] Location question detected in: '{message[:50]}...'")
-            logger.info(f"Location question detected in message")
-            return True
 
         print(f"\n[MEMORY RETRIEVAL] No memory retrieval intent detected in: '{message[:50]}...'")
         return False

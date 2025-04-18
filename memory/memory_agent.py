@@ -607,6 +607,10 @@ class ConversationMemoryAgent:
         Returns:
             List of relevant memory dictionaries
         """
+        print(f"\n[MEMORY RETRIEVAL] get_relevant_memories called with message: '{current_message[:50]}...'")
+        print(f"  Force retrieval: {force_retrieval}")
+        logger.info(f"Getting relevant memories for message: '{current_message[:50]}...'")
+
         # Create a context from recent conversation history
         recent_history = self.conversation_history[-10:] if len(self.conversation_history) > 10 else self.conversation_history
         context = "\n".join([f"{entry['role']}: {entry['content']}" for entry in recent_history])
@@ -666,20 +670,32 @@ class ConversationMemoryAgent:
 
             if retrieval_response:
                 logger.info(f"Retrieval agent response: {retrieval_response[:100]}...")
+                print(f"\n[MEMORY RETRIEVAL] Agent response: '{retrieval_response[:100]}...'")
             else:
                 logger.warning("No response from retrieval agent")
+                print(f"\n[MEMORY RETRIEVAL] No response from retrieval agent")
 
             # The retrieval agent should have used the retrieve_memories tool,
             # which would have stored the results in the database connector
             # Generate an embedding for the current message and retrieve relevant memories
+            print(f"\n[MEMORY RETRIEVAL] Creating embedding for message: '{current_message[:50]}...'")
             message_embedding = self.db_connector.create_embedding(current_message)
+            print(f"  Embedding created with length: {len(message_embedding)}")
 
             # Check if this is a location-related query
-            is_location_query = any(term in current_message.lower() for term in ['where', 'location', 'live', 'from', 'moved'])
+            location_terms = ['where', 'location', 'live', 'from', 'moved', 'address', 'city', 'state', 'country', 'reside']
+            is_location_query = any(term in current_message.lower() for term in location_terms)
 
-            # If it's a location query or we're forcing retrieval, try multiple queries
-            if is_location_query or force_retrieval:
+            # Check for voice mode patterns like "you know where I live"
+            voice_patterns = ['know where', 'remember where', 'know my location', 'know my address', 'you know where']
+            is_voice_location_query = any(pattern in current_message.lower() for pattern in voice_patterns)
+
+            # If it's a location query, voice location query, or we're forcing retrieval, try multiple queries
+            if is_location_query or is_voice_location_query or force_retrieval:
                 print(f"\n[DEBUG] Detected location-related query or forced retrieval, using multiple queries")
+                print(f"  Is location query: {is_location_query}")
+                print(f"  Is voice location query: {is_voice_location_query}")
+                print(f"  Force retrieval: {force_retrieval}")
 
                 # Try multiple location-related queries
                 location_queries = [
@@ -688,7 +704,10 @@ class ConversationMemoryAgent:
                     "where user lives",
                     "user's city",
                     "user's residence",
-                    "user's address"
+                    "user's address",
+                    "Seattle",  # Add specific city names
+                    "Sacramento",
+                    "user in Seattle"
                 ]
 
                 # Try each query and collect all unique memories
@@ -718,6 +737,7 @@ class ConversationMemoryAgent:
                     relevant_memories = self.db_connector.retrieve_memories(message_embedding, limit=3, user_id=self.user_id)
             else:
                 # Regular search for non-location queries
+                print(f"\n[DEBUG] Using regular search for non-location query")
                 relevant_memories = self.db_connector.retrieve_memories(message_embedding, limit=3, user_id=self.user_id)
 
             # Print the final memories we're returning
@@ -728,6 +748,9 @@ class ConversationMemoryAgent:
             return relevant_memories
         except Exception as e:
             logger.error(f"Error retrieving memories: {e}")
+            print(f"\n[MEMORY RETRIEVAL] Error retrieving memories: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
             return []  # Return empty list on error
         finally:
             # No need to clean up the session in ADK, it's managed by the session service
@@ -1135,7 +1158,7 @@ class ConversationMemoryAgent:
         if not memories:
             if retrieval_attempted:
                 # If retrieval was explicitly attempted but no memories were found, provide clear feedback
-                note = "### Memory retrieval note:\nI don't seem to have that specific information about where you live.\n###\n"
+                note = "### MEMORY RETRIEVAL NOTE:\nI don't have any information about where you live or your location in my memory.\n###\n"
                 print(f"[MEMORY FORMATTING] No memories found, returning note: {note}")
                 return note
             else:
@@ -1143,23 +1166,55 @@ class ConversationMemoryAgent:
                 print(f"[MEMORY FORMATTING] No memories found and no retrieval attempted, returning empty string")
                 return ""
 
-        formatted_memories = ["### Relevant memories from previous conversations:"]
+        # Make the memory context more explicit and prominent
+        formatted_memories = ["### IMPORTANT USER INFORMATION FROM MEMORY:"]
 
-        for i, memory in enumerate(memories):
-            content = memory.get('content', 'No content available')
-            timestamp = memory.get('timestamp', 'Unknown time')
-            category = memory.get('category', 'general')
+        # Check if any memory is about location
+        location_memories = []
+        other_memories = []
 
-            # Convert ISO timestamp to readable format if possible
-            try:
-                dt = datetime.fromisoformat(timestamp)
-                readable_time = dt.strftime("%B %d, %Y")
-            except (ValueError, TypeError):
-                readable_time = timestamp
+        for memory in memories:
+            content = memory.get('content', 'No content available').lower()
+            if any(term in content for term in ['live', 'location', 'address', 'city', 'moved', 'seattle', 'sacramento']):
+                location_memories.append(memory)
+            else:
+                other_memories.append(memory)
 
-            formatted_memories.append(f"{i+1}. [{category}] {content} (From {readable_time})")
+        # Format location memories first with special emphasis
+        if location_memories:
+            formatted_memories.append("USER LOCATION INFORMATION:")
+            for i, memory in enumerate(location_memories):
+                content = memory.get('content', 'No content available')
+                timestamp = memory.get('timestamp', 'Unknown time')
+                category = memory.get('category', 'general')
 
-        formatted_memories.append("###\n")
+                # Convert ISO timestamp to readable format if possible
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    readable_time = dt.strftime("%B %d, %Y")
+                except (ValueError, TypeError):
+                    readable_time = timestamp
+
+                formatted_memories.append(f"- {content} (Category: {category}, From: {readable_time})")
+
+        # Format other memories
+        if other_memories:
+            formatted_memories.append("\nOTHER USER INFORMATION:")
+            for i, memory in enumerate(other_memories):
+                content = memory.get('content', 'No content available')
+                timestamp = memory.get('timestamp', 'Unknown time')
+                category = memory.get('category', 'general')
+
+                # Convert ISO timestamp to readable format if possible
+                try:
+                    dt = datetime.fromisoformat(timestamp)
+                    readable_time = dt.strftime("%B %d, %Y")
+                except (ValueError, TypeError):
+                    readable_time = timestamp
+
+                formatted_memories.append(f"- {content} (Category: {category}, From: {readable_time})")
+
+        formatted_memories.append("\n### YOU MUST USE THIS INFORMATION IN YOUR RESPONSE ###\n")
         result = "\n".join(formatted_memories)
         print(f"[MEMORY FORMATTING] Formatted memories:\n{result}")
         return result

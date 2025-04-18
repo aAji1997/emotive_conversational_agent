@@ -24,6 +24,21 @@ class AudioHandler:
         self.playback_lock = threading.Lock()
         self.currently_playing = False
 
+        # ===== MEMORY QUERY SUPPRESSION MECHANISM - AUDIO HANDLING =====
+        # This is part of the bespoke solution to fix the "I don't know/Actually I do know" problem
+        # When a memory-related query is detected, we need to suppress the initial incorrect response
+        # in the audio playback.
+        #
+        # The approach works as follows:
+        # 1. Set memory_retrieval_active flag when a memory query is detected
+        # 2. Track which response we're on using memory_response_count
+        # 3. In the play_audio method, we check these flags and only play the second response
+        #
+        # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+        # It's critical for providing a good user experience with memory-related queries.
+        self.memory_retrieval_active = False
+        self.memory_response_count = 0
+
         # List available audio devices
         for i in range(self.p.get_device_count()):
             device_info = self.p.get_device_info_by_index(i)
@@ -82,6 +97,22 @@ class AudioHandler:
                 return None
         return None
 
+    def set_memory_retrieval_mode(self, active):
+        """Set whether we're in memory retrieval mode.
+
+        This is part of the memory query suppression mechanism that prevents the system
+        from playing the initial incorrect response for memory-related queries.
+
+        Args:
+            active (bool): Whether to activate memory retrieval mode
+        """
+        with self.playback_lock:
+            # If we're entering memory retrieval mode, reset the response counter
+            if active and not self.memory_retrieval_active:
+                self.memory_response_count = 0
+            self.memory_retrieval_active = active
+            logger.info(f"Memory retrieval mode set to: {active}")
+
     def play_audio(self, audio_data):
         """Play audio data."""
         # Skip if there's no audio data
@@ -93,6 +124,24 @@ class AudioHandler:
         if self.currently_playing:
             logger.warning("Already playing audio, cancelling new playback")
             return
+
+        # ===== MEMORY QUERY SUPPRESSION IMPLEMENTATION =====
+        # This is where we actually suppress the incorrect response for memory-related queries.
+        # When in memory retrieval mode, we track which response we're on and skip the first one.
+        #
+        # The first response would say something like "I don't know where you live" which is incorrect.
+        # The second response (after memory context is added) will have the correct information.
+        #
+        # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+        # It's critical for providing a good user experience with memory-related queries.
+        if self.memory_retrieval_active:
+            with self.playback_lock:
+                self.memory_response_count += 1
+
+                # Skip the first response (which is the incorrect one)
+                if self.memory_response_count == 1:
+                    logger.info("Skipping first audio response during memory retrieval")
+                    return
 
         def play():
             # Set a flag to indicate we're playing audio
@@ -135,6 +184,29 @@ class AudioHandler:
                 logger.info("Marking playback as stopped")
             self.currently_playing = False
 
+    def emergency_stop(self):
+        """Forcefully terminate all audio processes immediately."""
+        logger.info("EMERGENCY STOP: Forcefully terminating all audio processes")
+
+        # Stop recording
+        self.is_recording = False
+
+        # Stop playback
+        with self.playback_lock:
+            self.currently_playing = False
+
+        # Force close any open streams
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+                self.stream = None
+            except Exception as e:
+                logger.error(f"Error closing audio stream during emergency stop: {e}")
+
+        # Clear audio buffer
+        self.audio_buffer = b''
+
 
 class TranscriptProcessor:
     """Processes transcripts in a separate thread to avoid blocking the main conversation flow."""
@@ -145,6 +217,22 @@ class TranscriptProcessor:
         self.current_transcript = ""
         self.transcript_lock = threading.Lock()
         self.full_conversation = []  # Store the entire conversation in memory
+
+        # ===== MEMORY QUERY SUPPRESSION MECHANISM - TRANSCRIPT HANDLING =====
+        # This is part of the bespoke solution to fix the "I don't know/Actually I do know" problem
+        # When a memory-related query is detected, we need to suppress the initial incorrect response
+        # in the transcript as well as in the audio playback.
+        #
+        # The approach works as follows:
+        # 1. Set memory_retrieval_active flag when a memory query is detected
+        # 2. Store responses in pending_responses instead of adding them directly to the transcript
+        # 3. When memory_retrieval_active is set to False, we only add the last response (the correct one)
+        #    to the transcript and discard the first response (the incorrect one)
+        #
+        # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+        # It's critical for providing a good user experience with memory-related queries.
+        self.memory_retrieval_active = False
+        self.pending_responses = []  # Store responses during memory retrieval
 
         # Create transcripts directory if it doesn't exist
         self.transcripts_dir = Path("gpt_realtime/gpt_transcripts")
@@ -240,6 +328,36 @@ class TranscriptProcessor:
 
         logger.info(f"Added user query to transcript: {query_text[:30]}...")
 
+    def set_memory_retrieval_mode(self, active):
+        """Set whether we're in memory retrieval mode.
+
+        This is part of the memory query suppression mechanism that prevents the system
+        from showing the initial incorrect response in the transcript for memory-related queries.
+
+        When exiting memory retrieval mode, we process any pending responses but skip the first one
+        (which is the incorrect response) and only keep the last one (the corrected response).
+
+        Args:
+            active (bool): Whether to activate memory retrieval mode
+        """
+        with self.transcript_lock:
+            self.memory_retrieval_active = active
+            if not active and self.pending_responses:
+                # ===== MEMORY QUERY SUPPRESSION - TRANSCRIPT HANDLING =====
+                # This is where we actually suppress the incorrect response in the transcript.
+                # When exiting memory retrieval mode, we only add the last response (the corrected one)
+                # to the transcript and discard the first response (the incorrect one).
+                #
+                # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+                # It's critical for providing a good user experience with memory-related queries.
+                if len(self.pending_responses) > 1:
+                    # Skip the first response and only keep the corrected one
+                    correct_response = self.pending_responses[-1]
+                    self.full_conversation.append(f"Assistant: {correct_response}")
+                    self.full_conversation.append("")  # Add blank line
+                    logger.info(f"Added corrected memory response to transcript: {correct_response[:30]}...")
+                self.pending_responses = []
+
     def add_assistant_response(self, response_text):
         """Add an assistant's text response to the transcript."""
         if not response_text:
@@ -251,6 +369,21 @@ class TranscriptProcessor:
                 self.current_transcript += f"\n\nAssistant: {response_text}"
             else:
                 self.current_transcript = f"Assistant: {response_text}"
+
+            # ===== MEMORY QUERY SUPPRESSION - RESPONSE HANDLING =====
+            # This is part of the memory query suppression mechanism.
+            # When in memory retrieval mode, we don't add responses directly to the transcript.
+            # Instead, we store them in pending_responses and process them when exiting memory retrieval mode.
+            #
+            # This allows us to skip the first response (which is incorrect) and only keep the last one
+            # (which has the correct memory context).
+            #
+            # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
+            # It's critical for providing a good user experience with memory-related queries.
+            if self.memory_retrieval_active:
+                self.pending_responses.append(response_text)
+                logger.info(f"Stored assistant response during memory retrieval: {response_text[:30]}...")
+                return
 
             # Add as a new entry
             self.full_conversation.append(f"Assistant: {response_text}")
@@ -305,7 +438,8 @@ class TranscriptProcessor:
         filename = self.transcripts_dir / f"conversation_{timestamp}.txt"
 
         try:
-            with open(filename, 'w') as f:
+            # Use UTF-8 encoding to handle non-ASCII characters (like Welsh text)
+            with open(filename, 'w', encoding='utf-8') as f:
                 f.write(f"Complete Conversation Transcript: {timestamp}\n")
                 f.write("-" * 50 + "\n\n")
 
