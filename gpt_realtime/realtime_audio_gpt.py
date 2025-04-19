@@ -2699,6 +2699,15 @@ class RealtimeClient:
         """Runs in a separate thread to periodically check for new sentiment results and update the shared dict."""
         last_processed_index = -1
         print("[Sentiment Updater] Thread started.")
+        
+        # Initialize sentiment results list
+        sentiment_results = []
+        
+        # Get the transcripts directory path and create timestamped filename
+        transcripts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'gpt_realtime', 'gpt_transcripts')
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        sentiment_file_path = os.path.join(transcripts_dir, f'sentiment_results_{timestamp}.json')
+        
         while not self.sentiment_stop_event.is_set():
             try:
                 # Access shared list carefully
@@ -2707,23 +2716,60 @@ class RealtimeClient:
                     if current_len > last_processed_index + 1:
                         # Process new items
                         new_results = self.sentiment_history_list[last_processed_index + 1:]
-                        # print(f"[Sentiment Updater] Found {len(new_results)} new sentiment results.") # Debug
+                        print(f"[Sentiment Updater] Found {len(new_results)} new sentiment results.")
+                        
                         for result in new_results:
-                            if isinstance(result, dict) and 'emotion_scores' in result:
-                                latest_scores = result['emotion_scores']
-                                # Update the shared dictionary atomically (Manager.dict handles this)
-                                self.shared_emotion_scores.update(latest_scores)
-                                # print(f"[Sentiment Updater] Updated shared scores: {dict(self.shared_emotion_scores)}") # Debug
+                            if isinstance(result, dict):
+                                # Add timestamp if not present
+                                if 'timestamp' not in result:
+                                    result['timestamp'] = time.time()
+                                
+                                # Parse emotion scores from raw response if needed
+                                if 'emotion_scores' not in result and 'raw_response' in result:
+                                    try:
+                                        raw = result['raw_response']
+                                        # Clean up the raw response if it contains markdown
+                                        if '```json' in raw:
+                                            raw = raw.split('```json')[1].split('```')[0].strip()
+                                        emotion_scores = json.loads(raw)
+                                        result['emotion_scores'] = emotion_scores
+                                    except json.JSONDecodeError as e:
+                                        print(f"[Sentiment Updater] Error parsing emotion scores: {e}")
+                                        continue
+                                
+                                # Add to sentiment results
+                                sentiment_results.append(result)
+                                
+                                # Update the shared dictionary atomically
+                                if 'emotion_scores' in result:
+                                    self.shared_emotion_scores.update(result['emotion_scores'])
+                        
+                        # Save updated results to JSON file in transcripts directory
+                        try:
+                            with open(sentiment_file_path, 'w') as f:
+                                json.dump(sentiment_results, f, indent=2)
+                            print(f"[Sentiment Updater] Saved {len(sentiment_results)} sentiment results to {sentiment_file_path}")
+                        except Exception as e:
+                            print(f"[Sentiment Updater] Error saving sentiment results: {e}")
+                        
                         last_processed_index = current_len - 1
 
                 # Sleep for a short duration
-                time.sleep(0.5) # Check twice per second
+                time.sleep(0.5)  # Check twice per second
 
             except Exception as e:
-                 print(f"[Sentiment Updater] Error in update loop: {e}")
-                 traceback.print_exc() # Use traceback for full error details
-                 # Avoid tight loop on error
-                 time.sleep(2)
+                print(f"[Sentiment Updater] Error in update loop: {e}")
+                traceback.print_exc()
+                # Avoid tight loop on error
+                time.sleep(2)
+
+        # Final save before thread stops
+        try:
+            with open(sentiment_file_path, 'w') as f:
+                json.dump(sentiment_results, f, indent=2)
+            print(f"[Sentiment Updater] Final save: {len(sentiment_results)} sentiment results to {sentiment_file_path}")
+        except Exception as e:
+            print(f"[Sentiment Updater] Error in final save: {e}")
 
         print("[Sentiment Updater] Thread stopped.")
 

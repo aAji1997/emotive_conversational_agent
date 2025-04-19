@@ -1,0 +1,17 @@
+[
+  {
+    "timestamp": 1744790073.7030323,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 1,
+      "Surprise": 0,
+      "Sadness": 1,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 1, \"Surprise\": 0, \"Sadness\": 1, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.290666666666667
+  }
+]
