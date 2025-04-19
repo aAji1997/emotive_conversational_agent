@@ -1,5 +1,5 @@
 import logging
-from conversation_analyzer import ConversationAnalyzer
+from gpt_realtime.transcript_conversation_analyzer import ConversationAnalyzer
 
 def setup_logging():
     """Configure logging for the analyzer."""

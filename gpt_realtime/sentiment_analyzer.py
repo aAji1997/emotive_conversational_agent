@@ -7,16 +7,13 @@ import json
 import tempfile
 import wave
 import os
-
-# Attempt to import google.genai, provide guidance if missing
 try:
     from google import genai
 except ImportError:
     print("ERROR: The 'google-genai' library is required for sentiment analysis.")
     print("Please install it using: pip install google-genai")
-    # Optionally, exit or raise an error if essential
-    # raise ImportError("Missing dependency: google-genai")
-    genai = None # Set to None so checks later fail gracefully
+    
+    raise ImportError("Missing dependency: google-genai")
 
 
 class SentimentAnalysisProcess(multiprocessing.Process):
