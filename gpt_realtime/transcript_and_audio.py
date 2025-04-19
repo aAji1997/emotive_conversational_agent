@@ -210,7 +210,7 @@ class AudioHandler:
 
 class TranscriptProcessor:
     """Processes transcripts in a separate thread to avoid blocking the main conversation flow."""
-    def __init__(self):
+    def __init__(self, username=None):
         self.transcript_queue = queue.Queue()
         self.processing_thread = None
         self.running = False
@@ -228,19 +228,42 @@ class TranscriptProcessor:
         # 2. Store responses in pending_responses instead of adding them directly to the transcript
         # 3. When memory_retrieval_active is set to False, we only add the last response (the correct one)
         #    to the transcript and discard the first response (the incorrect one)
-        #
-        # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
         # It's critical for providing a good user experience with memory-related queries.
         self.memory_retrieval_active = False
         self.pending_responses = []  # Store responses during memory retrieval
 
-        # Create transcripts directory if it doesn't exist
+        # Create base transcripts directory
         self.transcripts_dir = Path("gpt_realtime/gpt_transcripts")
         self.transcripts_dir.mkdir(exist_ok=True)
-        logger.info(f"Transcript directory set to: {self.transcripts_dir.absolute()}")
+
+        # Initialize user-specific directory
+        self.user_transcripts_dir = None
+        logger.info(f"Base transcript directory set to: {self.transcripts_dir.absolute()}")
+
+        # Set up user-specific directory immediately if username is provided
+        self.set_user(username)
 
         # Track if speech has been detected
         self.speech_detected = False
+
+        # Flag to track if transcript has been saved for this session
+        self.transcript_saved = False
+        # Store the saved transcript filename
+        self.saved_transcript_file = None
+
+    def set_user(self, username=None):
+        """Set up user-specific transcript directory."""
+        if username:
+            # Create user-specific directory using sanitized username
+            safe_username = "".join(c for c in username if c.isalnum() or c in ('-', '_')).lower()
+            self.user_transcripts_dir = self.transcripts_dir / safe_username
+            self.user_transcripts_dir.mkdir(exist_ok=True)
+            logger.info(f"User transcript directory set to: {self.user_transcripts_dir.absolute()}")
+        else:
+            # Use 'anonymous' folder for users without username
+            self.user_transcripts_dir = self.transcripts_dir / "anonymous"
+            self.user_transcripts_dir.mkdir(exist_ok=True)
+            logger.info(f"Anonymous transcript directory set to: {self.user_transcripts_dir.absolute()}")
 
     def start(self):
         """Start the transcript processing thread."""
@@ -296,6 +319,9 @@ class TranscriptProcessor:
             self.current_transcript = ""
             # Reset speech detection
             self.speech_detected = False
+            # Reset transcript saved flag
+            self.transcript_saved = False
+            self.saved_transcript_file = None
 
         logger.info("Transcript cleared for new recording session")
 
@@ -409,6 +435,32 @@ class TranscriptProcessor:
         logger.info("In-memory transcript updated")
         return cleaned_conversation
 
+    def get_last_assistant_response(self):
+        """Get the last assistant response from the transcript.
+
+        Returns:
+            str: The last assistant response, or an empty string if none found.
+        """
+        if not self.full_conversation:
+            logger.info("No transcript to get assistant response from")
+            return ""
+
+        # Look for the last assistant response in the full conversation
+        for entry in reversed(self.full_conversation):
+            if entry.startswith("Assistant: "):
+                response = entry[len("Assistant: "):]
+                logger.info(f"Found last assistant response: {response[:30]}...")
+                return response
+
+        # If we're in memory retrieval mode, check pending responses
+        if self.memory_retrieval_active and self.pending_responses:
+            response = self.pending_responses[-1]
+            logger.info(f"Found last assistant response in pending responses: {response[:30]}...")
+            return response
+
+        logger.info("No assistant response found in transcript")
+        return ""
+
     def save_transcript(self, force=False):
         """Save the complete transcript to a file at the end of the conversation.
 
@@ -419,26 +471,31 @@ class TranscriptProcessor:
             logger.info("No transcript to save")
             return None
 
-        # Only save if force=True (this is the final save at the end of the session)
-        # This prevents saving intermediate transcripts during the conversation
         if not force:
             logger.info("Skipping intermediate transcript save")
             return None
 
-        # Clean up any unresolved placeholders before saving
+        # If transcript has already been saved for this session, return the existing filename
+        if self.transcript_saved and self.saved_transcript_file:
+            logger.info(f"Transcript already saved to: {self.saved_transcript_file}")
+            return self.saved_transcript_file
+
+        # Clean up any unresolved placeholders
         cleaned_conversation = []
         for entry in self.full_conversation:
             if entry == "User: [Processing speech...]":
-                # Skip unresolved placeholders
                 continue
             cleaned_conversation.append(entry)
 
+        # Ensure we have a directory to save to (use base dir if user dir not set)
+        save_dir = self.user_transcripts_dir or self.transcripts_dir
+
         # Create a new file for this conversation
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = self.transcripts_dir / f"conversation_{timestamp}.txt"
+        filename = save_dir / f"conversation_{timestamp}.txt"
 
         try:
-            # Use UTF-8 encoding to handle non-ASCII characters (like Welsh text)
+            # Use UTF-8 encoding to handle non-ASCII characters
             with open(filename, 'w', encoding='utf-8') as f:
                 f.write(f"Complete Conversation Transcript: {timestamp}\n")
                 f.write("-" * 50 + "\n\n")
@@ -448,6 +505,11 @@ class TranscriptProcessor:
                     f.write(f"{line}\n")
 
             logger.info(f"Complete transcript saved to: {filename}")
+
+            # Mark transcript as saved for this session
+            self.transcript_saved = True
+            self.saved_transcript_file = filename
+
             return filename
         except Exception as e:
             logger.error(f"Error saving transcript: {e}")

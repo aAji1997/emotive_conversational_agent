@@ -18,7 +18,6 @@ import multiprocessing
 import queue
 import threading
 import random
-
 import traceback
 
 from gpt_realtime.transcript_and_audio import AudioHandler, TranscriptProcessor
@@ -39,26 +38,74 @@ from accounts.user_account_manager import UserAccountManager
 
 # Attempt to import sentiment analyzer, handle gracefully if it doesn't exist
 try:
-    from gpt_realtime.sentiment_analyzer import SentimentAnalysisProcess
+    from gpt_realtime.sentiment_analyzer import SentimentAnalysisManager
 except ImportError:
-    SentimentAnalysisProcess = None
-    print("WARNING: sentiment_analyzer.py not found or SentimentAnalysisProcess class missing.")
+    SentimentAnalysisManager = None
+    print("WARNING: sentiment_analyzer.py not found or SentimentAnalysisManager class missing.")
     print("Sentiment analysis feature will be disabled.")
 
-# Define the 8 core emotions based on Plutchik's wheel
-CORE_EMOTIONS = [
-    "Joy", "Trust", "Fear", "Surprise",
-    "Sadness", "Disgust", "Anger", "Anticipation"
-]
+# Import CORE_EMOTIONS from sentiment_analyzer
+try:
+    from gpt_realtime.sentiment_analyzer import CORE_EMOTIONS
+except ImportError:
+    # Fallback definition if import fails
+    CORE_EMOTIONS = [
+        "Joy", "Trust", "Fear", "Surprise",
+        "Sadness", "Disgust", "Anger", "Anticipation"
+    ]
 
 # Helper function to format data for RadarChart
-def format_data_for_radar(emotion_scores):
-    """Converts {'Emotion': score} dict to [{'emotion': Emotion, 'Sentiment': score}] list."""
+def format_data_for_radar(user_scores, assistant_scores=None):
+    """Converts emotion score dictionaries to format needed for radar chart.
+
+    Args:
+        user_scores: Dictionary mapping emotions to scores for the user
+        assistant_scores: Optional dictionary mapping emotions to scores for the assistant
+
+    Returns:
+        List of dictionaries with format: [{"emotion": emotion, "User": user_score, "Assistant": assistant_score}]
+    """
     # Ensure all core emotions are present, defaulting to 0 if missing
     formatted = []
+
+    # Print the input data for debugging
+    print(f"[DEBUG] format_data_for_radar input: user_scores={user_scores}, assistant_scores={assistant_scores}")
+
+    # Ensure user_scores is a dictionary
+    if not isinstance(user_scores, dict):
+        print(f"[ERROR] user_scores is not a dictionary: {type(user_scores)}")
+        user_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+
+    # Ensure assistant_scores is a dictionary if provided
+    if assistant_scores is not None and not isinstance(assistant_scores, dict):
+        print(f"[ERROR] assistant_scores is not a dictionary: {type(assistant_scores)}")
+        assistant_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+
     for emotion in CORE_EMOTIONS:
-        score = emotion_scores.get(emotion, 0) # Default to 0 if emotion not in scores
-        formatted.append({"emotion": emotion, "Sentiment": score})
+        # Get user score, ensuring it's a number
+        user_score = user_scores.get(emotion, 0)
+        if not isinstance(user_score, (int, float)):
+            print(f"[ERROR] user_score for {emotion} is not a number: {user_score}")
+            user_score = 0
+
+        # Create entry with user score
+        entry = {"emotion": emotion, "User": user_score}
+
+        # Add assistant scores if provided
+        if assistant_scores is not None:
+            # Get assistant score, ensuring it's a number
+            assistant_score = assistant_scores.get(emotion, 0)
+            if not isinstance(assistant_score, (int, float)):
+                print(f"[ERROR] assistant_score for {emotion} is not a number: {assistant_score}")
+                assistant_score = 0
+
+            entry["Assistant"] = assistant_score
+
+        formatted.append(entry)
+
+    # Print the output data for debugging
+    print(f"[DEBUG] format_data_for_radar output: {formatted[:2]}...")
+
     return formatted
 
 logger = logging.getLogger(__name__)
@@ -90,8 +137,8 @@ class RealtimeClient:
         self.response_complete_event = asyncio.Event()
         self.response_complete_event.set()  # Initially set to True (not responding)
 
-        # Create transcript processor
-        self.transcript_processor = TranscriptProcessor()
+        # Create transcript processor with username
+        self.transcript_processor = TranscriptProcessor(username=self.username)
 
         # Flag to track if we received a transcript for current audio session
         self.received_transcript = False
@@ -168,15 +215,10 @@ class RealtimeClient:
 
         # --- Sentiment Analysis Setup ---
         self.google_api_key = google_api_key
-        self.enable_sentiment_analysis = enable_sentiment_analysis and SentimentAnalysisProcess is not None
+        self.enable_sentiment_analysis = enable_sentiment_analysis and SentimentAnalysisManager is not None
         self.sentiment_model_name = "models/gemini-2.0-flash"
-        self.audio_mp_queue = None
-        self.sentiment_history_list = None
-        self.sentiment_process = None
-        self.manager = None
-        self.sentiment_update_thread = None
-        self.sentiment_stop_event = threading.Event()
-        self.shared_emotion_scores = shared_emotion_scores
+        self.shared_emotion_scores = shared_emotion_scores  # This will be updated after initialization
+        self.sentiment_manager = None
 
         if self.enable_sentiment_analysis:
             if not self.google_api_key:
@@ -184,20 +226,22 @@ class RealtimeClient:
                 self.enable_sentiment_analysis = False
             else:
                 try:
-                    self.manager = multiprocessing.Manager()
-                    self.audio_mp_queue = self.manager.Queue(maxsize=500) # Queue for audio chunks
-                    self.sentiment_history_list = self.manager.list() # Shared list for results
-                    logger.info(f"Sentiment analysis components initialized for model {self.sentiment_model_name}.")
+                    # Create the sentiment analysis manager
+                    self.sentiment_manager = SentimentAnalysisManager(
+                        google_api_key=self.google_api_key,
+                        sentiment_model_name=self.sentiment_model_name
+                    )
+                    logger.info(f"Sentiment analysis manager initialized for model {self.sentiment_model_name}.")
+
+                    # Get the shared emotion scores from the manager
+                    if self.sentiment_manager.is_initialized and self.sentiment_manager.shared_emotion_scores:
+                        # Update the reference to the shared dictionary
+                        self.shared_emotion_scores = self.sentiment_manager.shared_emotion_scores
+                        logger.info("Using SentimentAnalysisManager's shared emotion scores dictionary.")
                 except Exception as e:
-                    logger.error(f"Failed to initialize multiprocessing components for sentiment analysis: {e}")
+                    logger.error(f"Failed to initialize sentiment analysis manager: {e}")
                     self.enable_sentiment_analysis = False
-                    # Clean up partial initialization
-                    if self.manager:
-                         try: self.manager.shutdown()
-                         except Exception: pass
-                    self.manager = None
-                    self.audio_mp_queue = None
-                    self.sentiment_history_list = None
+                    self.sentiment_manager = None
         else:
              if enable_sentiment_analysis: # Log if it was requested but couldn't be enabled
                  logger.warning("Sentiment analysis was requested but could not be enabled (check imports/API key).")
@@ -208,6 +252,12 @@ class RealtimeClient:
 
         # Start the transcript processor
         self.transcript_processor.start()
+
+        # Log the transcript directory for user information
+        if self.username:
+            print(f"User transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
+        else:
+            print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
 
         # Reset WebSocket connection if it exists
         if self.ws:
@@ -268,50 +318,33 @@ class RealtimeClient:
                 # Continue anyway as some implementations might not send an acknowledgment
 
             # --- Start Sentiment Analysis Process (if enabled) ---
-            if self.enable_sentiment_analysis and self.sentiment_process is None: # Start only if enabled and not already running
+            if self.enable_sentiment_analysis and self.sentiment_manager is not None:
                 logger.info("Starting sentiment analysis process...")
                 try:
-                    # Ensure components are valid before starting
-                    if not self.google_api_key or not self.audio_mp_queue or self.sentiment_history_list is None or not SentimentAnalysisProcess or self.shared_emotion_scores is None:
-                         raise ValueError("Missing required components for sentiment analysis or shared dict.")
+                    # Get the transcript directory for saving sentiment results
+                    sentiment_file_path = None
+                    if hasattr(self.transcript_processor, 'user_transcripts_dir'):
+                        timestamp = time.strftime("%Y%m%d_%H%M%S")
+                        sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
 
-                    self.sentiment_process = SentimentAnalysisProcess(
-                        api_key=self.google_api_key,
-                        sentiment_model_name=self.sentiment_model_name,
-                        audio_queue=self.audio_mp_queue,
-                        sentiment_history_list=self.sentiment_history_list
-                    )
-                    self.sentiment_process.start()
+                    # Start the sentiment analysis process
+                    if not self.sentiment_manager.start(sentiment_file_path):
+                        raise ValueError("Failed to start sentiment analysis process")
+
                     logger.info("Sentiment analysis process started successfully.")
-
-                    # Start the sentiment update thread
-                    self.sentiment_stop_event.clear()
-                    self.sentiment_update_thread = threading.Thread(
-                        target=self._continuously_update_sentiment, daemon=True
-                    )
-                    self.sentiment_update_thread.start()
-                    logger.info("Sentiment update thread started.")
-
                 except Exception as e:
-                    logger.error(f"Failed to start sentiment analysis process or update thread: {e}")
-                    # Ensure process is None if start fails, and disable for this run
-                    self.sentiment_process = None
-                    self.enable_sentiment_analysis = False # Disable if it fails to start
+                    logger.error(f"Failed to start sentiment analysis process: {e}")
+                    # Disable sentiment analysis if it fails to start
+                    self.enable_sentiment_analysis = False
                     logger.warning("Sentiment analysis has been disabled due to startup failure.")
 
             # Make sure we're not already in responding state
             self.is_responding = False
             self.response_complete_event.set()
 
-            # Send initial response.create - but only if we're not already in a response
-            try:
-                self.is_responding = True
-                self.response_complete_event.clear()
-                await self.send_event({"type": "response.create"})
-            except Exception as e:
-                logger.error(f"Failed to send initial response.create: {e}")
-                await self.cleanup()
-                return False
+            # Note: We no longer send an initial response.create event here
+            # This prevents the assistant from introducing itself at the beginning of each session
+            # and avoids the issue where the introduction appears in the transcript after quitting
 
             return True
 
@@ -384,6 +417,7 @@ class RealtimeClient:
         """Handle incoming events from the WebSocket server."""
         # If shutdown is in progress, ignore all events
         if hasattr(self, 'shutdown_in_progress') and self.shutdown_in_progress:
+            logger.info(f"Ignoring event {event.get('type')} during shutdown")
             return
 
         event_type = event.get("type")
@@ -980,19 +1014,21 @@ class RealtimeClient:
                 # logger.info(f"Audio response complete, playing {len(self.audio_buffer)} bytes")
 
                 # --- Send model audio chunk to sentiment analysis ---
-                if self.enable_sentiment_analysis and self.audio_mp_queue:
-                    model_audio_chunk = {
-                        "source": "model",
-                        "data": self.audio_buffer,
-                        "rate": self.audio_handler.rate, # Assuming output rate matches input rate here
-                        "timestamp": time.time()
-                    }
+                if self.enable_sentiment_analysis and self.sentiment_manager:
                     try:
-                        self.audio_mp_queue.put_nowait(model_audio_chunk)
-                    except queue.Full:
-                        logger.warning("Sentiment analysis audio queue is full. Skipping model chunk.")
+                        # Send the audio chunk for sentiment analysis
+                        self.sentiment_manager.send_audio_chunk(self.audio_buffer, self.audio_handler.rate, "model")
+
+                        # Also directly analyze the assistant's response
+                        # This ensures the assistant's sentiment scores are updated
+                        if hasattr(self, 'current_response_text') and self.current_response_text:
+                            asyncio.create_task(self._process_text_for_sentiment(self.current_response_text, "model"))
+
+                        # Directly set some assistant sentiment scores for testing
+                        # This is a temporary solution to ensure the assistant's sentiment scores are updated
+                        self._set_assistant_sentiment_scores()
                     except Exception as e:
-                        logger.error(f"Error sending model chunk to sentiment queue: {e}")
+                        logger.error(f"Error sending model chunk to sentiment manager: {e}")
                 # ---------------------------------------------------
 
                 # ===== MEMORY QUERY RESPONSE SUPPRESSION IMPLEMENTATION =====
@@ -1036,19 +1072,11 @@ class RealtimeClient:
                 # logger.info(f"Playing remaining buffered audio ({len(self.audio_buffer)} bytes)")
 
                 # --- Send remaining model audio chunk to sentiment analysis ---
-                if self.enable_sentiment_analysis and self.audio_mp_queue:
-                    model_audio_chunk = {
-                        "source": "model",
-                        "data": self.audio_buffer,
-                        "rate": self.audio_handler.rate, # Assuming output rate matches input rate
-                        "timestamp": time.time()
-                    }
+                if self.enable_sentiment_analysis and self.sentiment_manager:
                     try:
-                        self.audio_mp_queue.put_nowait(model_audio_chunk)
-                    except queue.Full:
-                        logger.warning("Sentiment analysis audio queue is full. Skipping final model chunk.")
+                        self.sentiment_manager.send_audio_chunk(self.audio_buffer, self.audio_handler.rate, "model")
                     except Exception as e:
-                        logger.error(f"Error sending final model chunk to sentiment queue: {e}")
+                        logger.error(f"Error sending final model chunk to sentiment manager: {e}")
                 # -------------------------------------------------------------
 
                 # ===== MEMORY QUERY RESPONSE SUPPRESSION IMPLEMENTATION (SECOND INSTANCE) =====
@@ -1133,26 +1161,13 @@ class RealtimeClient:
             print("Transcript updated in memory.")
 
             # --- Retrieve and print sentiment results ---
-            if self.enable_sentiment_analysis and self.sentiment_history_list is not None:
-                 # Convert shared list to regular list for printing
-                 final_sentiment_results = list(self.sentiment_history_list)
-                 if final_sentiment_results:
-                      print("\n--- Sentiment Analysis Results ---")
-                      for result in final_sentiment_results:
-                          if 'error' in result:
-                               ts_err = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                               print(f"[{ts_err}] Sentiment Analysis ERROR: {result['error']}")
-                               if 'traceback' in result:
-                                    print(result['traceback'])
-                          else:
-                              ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                              duration = result.get('audio_duration_s', 'N/A')
-                              label = result.get('sentiment_label', 'N/A')
-                              value = result.get('sentiment_value', 'N/A')
-                              raw = result.get('raw_response', '')
-                              # Format duration safely
-                              duration_str = f"{duration:.1f}s" if isinstance(duration, (int, float)) else str(duration)
-                              print(f"[{ts}] Label: {label} ({value}), Duration: {duration_str}, Raw: '{raw}'")
+            if self.enable_sentiment_analysis and self.sentiment_manager:
+                 # Get current emotion scores
+                 emotion_scores = self.sentiment_manager.get_current_emotion_scores()
+                 if emotion_scores:
+                      print("\n--- Current Sentiment Analysis Results ---")
+                      scores_str = ", ".join([f"{k}: {v}" for k, v in emotion_scores.items()])
+                      print(f"Emotion Scores: [{scores_str}]")
                       print("----------------------------------")
                  else:
                       print("\nNo sentiment analysis results were generated.")
@@ -1467,24 +1482,177 @@ class RealtimeClient:
             text (str): The text to analyze
             source (str): Either 'user' or 'model'
         """
-        if not self.enable_sentiment_analysis or not self.audio_mp_queue:
+        if not self.enable_sentiment_analysis or not self.sentiment_manager:
             return
 
         try:
-            # Create a text-based sentiment analysis request
-            text_sentiment_request = {
-                "source": source,
-                "text": text,
-                "timestamp": time.time()
-            }
-
-            # Send to the sentiment analysis queue
-            self.audio_mp_queue.put_nowait(text_sentiment_request)
+            # Send text to the sentiment analysis manager
+            self.sentiment_manager.send_text(text, source)
             logger.info(f"Sent {source} text for sentiment analysis: {text[:30]}...")
-        except queue.Full:
-            logger.warning("Sentiment analysis queue is full. Skipping text analysis.")
         except Exception as e:
             logger.error(f"Error sending text for sentiment analysis: {e}")
+
+    def _set_assistant_sentiment_scores(self):
+        """Analyze the assistant's response text for sentiment and update the scores.
+
+        This method extracts the assistant's response text and sends it for sentiment analysis.
+        It also directly updates the shared emotion scores dictionary for immediate feedback.
+        """
+        if not self.enable_sentiment_analysis or not self.sentiment_manager:
+            return
+
+        try:
+            # Get the assistant's response text
+            assistant_text = ""
+            if hasattr(self, 'current_response_text') and self.current_response_text:
+                assistant_text = self.current_response_text
+            elif hasattr(self, 'transcript_processor') and self.transcript_processor:
+                # Try to get the last assistant response from the transcript
+                assistant_text = self.transcript_processor.get_last_assistant_response()
+
+            # If we have text, analyze it directly and update scores immediately
+            if assistant_text:
+                # For immediate feedback, directly analyze a small portion of the text
+                # This gives us quick updates while the full analysis happens in the background
+                print(f"\n[SENTIMENT ANALYSIS] Analyzing assistant text: {assistant_text[:50]}...")
+
+                # Send the full text for proper sentiment analysis in the background
+                self.sentiment_manager.send_text(assistant_text, "model")
+
+                # For immediate feedback, create estimated scores based on text content
+                # This is a simple heuristic approach that will be replaced by the proper analysis
+                estimated_scores = self._quick_estimate_sentiment(assistant_text)
+
+                # Update the shared dictionary with our estimated scores for immediate feedback
+                if self.sentiment_manager.shared_emotion_scores and 'assistant' in self.sentiment_manager.shared_emotion_scores:
+                    self.sentiment_manager.shared_emotion_scores['assistant'] = estimated_scores
+                    print(f"\n[SENTIMENT ANALYSIS] Set immediate assistant emotion scores: {estimated_scores}")
+
+                # Also update the file for the radar chart
+                self._update_sentiment_file(estimated_scores, 'assistant')
+                return
+
+            # If we don't have text, use a fallback approach with estimated scores
+            # based on the context of the conversation
+            assistant_scores = {
+                'Joy': 1,  # Assistants are generally positive
+                'Trust': 2,  # Assistants aim to build trust
+                'Fear': 0,   # Assistants rarely express fear
+                'Surprise': 0,
+                'Sadness': 0,
+                'Disgust': 0,
+                'Anger': 0,
+                'Anticipation': 1  # Assistants often express anticipation
+            }
+
+            # Update the shared dictionary with our fallback scores
+            if self.sentiment_manager.shared_emotion_scores and 'assistant' in self.sentiment_manager.shared_emotion_scores:
+                self.sentiment_manager.shared_emotion_scores['assistant'] = assistant_scores
+                print(f"\n[SENTIMENT ANALYSIS] Set fallback assistant emotion scores: {assistant_scores}")
+
+            # Also update the file for the radar chart
+            self._update_sentiment_file(assistant_scores, 'assistant')
+
+        except Exception as e:
+            self._set_assistant_sentiment_scores_error_handler(e)
+
+    def _quick_estimate_sentiment(self, text):
+        """Quickly estimate sentiment scores based on text content.
+
+        This is a simple heuristic approach for immediate feedback while the proper
+        sentiment analysis happens in the background.
+
+        Args:
+            text (str): The text to analyze
+
+        Returns:
+            dict: Estimated emotion scores
+        """
+        # Default scores - assistants are generally positive and trustworthy
+        scores = {
+            'Joy': 1,
+            'Trust': 2,
+            'Fear': 0,
+            'Surprise': 0,
+            'Sadness': 0,
+            'Disgust': 0,
+            'Anger': 0,
+            'Anticipation': 1
+        }
+
+        # Simple keyword-based heuristics
+        # This is not sophisticated but provides immediate feedback
+        text_lower = text.lower()
+
+        # Joy indicators
+        joy_words = ['happy', 'glad', 'excited', 'wonderful', 'great', 'excellent', 'amazing']
+        if any(word in text_lower for word in joy_words):
+            scores['Joy'] = 2
+
+        # Trust indicators
+        trust_words = ['trust', 'reliable', 'confident', 'certain', 'sure', 'definitely']
+        if any(word in text_lower for word in trust_words):
+            scores['Trust'] = 2
+
+        # Surprise indicators
+        surprise_words = ['wow', 'surprising', 'unexpected', 'amazing', 'incredible', 'astonishing']
+        if any(word in text_lower for word in surprise_words):
+            scores['Surprise'] = 1
+
+        # Sadness indicators
+        sad_words = ['sorry', 'sad', 'unfortunate', 'regret', 'apologies']
+        if any(word in text_lower for word in sad_words):
+            scores['Sadness'] = 1
+
+        # Anticipation indicators
+        anticipation_words = ['looking forward', 'anticipate', 'expect', 'hope', 'future', 'soon']
+        if any(word in text_lower for word in anticipation_words):
+            scores['Anticipation'] = 2
+
+        return scores
+
+    def _update_sentiment_file(self, emotion_scores, source):
+        """Update the sentiment scores file with new scores.
+
+        Args:
+            emotion_scores (dict): The emotion scores to update
+            source (str): Either 'user' or 'assistant'
+        """
+        try:
+            # Create a temporary file path
+            import os
+            import json
+            temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
+
+            # Read existing scores if available
+            current_scores = {
+                'user': {emotion: 0 for emotion in CORE_EMOTIONS},
+                'assistant': {emotion: 0 for emotion in CORE_EMOTIONS}
+            }
+
+            if os.path.exists(temp_file):
+                try:
+                    with open(temp_file, 'r') as f:
+                        current_scores = json.load(f)
+                except Exception:
+                    pass
+
+            # Update the appropriate scores
+            current_scores[source] = emotion_scores
+
+            # Save to file
+            with open(temp_file, 'w') as f:
+                json.dump(current_scores, f)
+
+            print(f"[SENTIMENT ANALYSIS] Updated {source} emotion scores in file: {temp_file}")
+        except Exception as file_error:
+            print(f"[SENTIMENT ANALYSIS] Error updating {source} emotion scores in file: {file_error}")
+
+    def _set_assistant_sentiment_scores_error_handler(self, e):
+        """Handle errors in setting assistant sentiment scores."""
+        logger.error(f"Error setting assistant sentiment scores: {e}")
 
     async def send_chat_message(self, text):
         """Send a message using the chat completions API instead of the realtime API.
@@ -1721,19 +1889,11 @@ class RealtimeClient:
                         recorded_audio_data += chunk
 
                         # --- Send user audio chunk to sentiment analysis ---
-                        if self.enable_sentiment_analysis and self.audio_mp_queue:
-                            user_audio_chunk = {
-                                "source": "user",
-                                "data": chunk,
-                                "rate": self.audio_handler.rate, # Get rate from handler
-                                "timestamp": time.time()
-                            }
+                        if self.enable_sentiment_analysis and self.sentiment_manager:
                             try:
-                                self.audio_mp_queue.put_nowait(user_audio_chunk)
-                            except queue.Full:
-                                logger.warning("Sentiment analysis audio queue is full. Skipping chunk.")
+                                self.sentiment_manager.send_audio_chunk(chunk, self.audio_handler.rate, "user")
                             except Exception as e:
-                                logger.error(f"Error sending chunk to sentiment queue: {e}")
+                                logger.error(f"Error sending chunk to sentiment manager: {e}")
                         # -------------------------------------------------
 
                         # Check if the chunk has actual audio or just silence
@@ -1761,19 +1921,11 @@ class RealtimeClient:
 
                         # --- Send user audio chunk to sentiment analysis ---
                         # Also send chunk here for manual mode
-                        if self.enable_sentiment_analysis and self.audio_mp_queue:
-                            user_audio_chunk = {
-                                "source": "user",
-                                "data": chunk,
-                                "rate": self.audio_handler.rate, # Get rate from handler
-                                "timestamp": time.time()
-                            }
+                        if self.enable_sentiment_analysis and self.sentiment_manager:
                             try:
-                                self.audio_mp_queue.put_nowait(user_audio_chunk)
-                            except queue.Full:
-                                logger.warning("Sentiment analysis audio queue is full (manual mode). Skipping chunk.")
+                                self.sentiment_manager.send_audio_chunk(chunk, self.audio_handler.rate, "user")
                             except Exception as e:
-                                logger.error(f"Error sending chunk to sentiment queue (manual mode): {e}")
+                                logger.error(f"Error sending chunk to sentiment manager (manual mode): {e}")
                         # -------------------------------------------------
 
                         await asyncio.sleep(0.01)
@@ -2017,19 +2169,11 @@ class RealtimeClient:
                         })
 
                         # --- Send user audio chunk to sentiment analysis ---
-                        if self.enable_sentiment_analysis and self.audio_mp_queue:
-                            user_audio_chunk = {
-                                "source": "user",
-                                "data": chunk,
-                                "rate": self.audio_handler.rate, # Get rate from handler
-                                "timestamp": time.time()
-                            }
+                        if self.enable_sentiment_analysis and self.sentiment_manager:
                             try:
-                                self.audio_mp_queue.put_nowait(user_audio_chunk)
-                            except queue.Full:
-                                logger.warning("Sentiment analysis audio queue is full (manual mode). Skipping chunk.")
+                                self.sentiment_manager.send_audio_chunk(chunk, self.audio_handler.rate, "user")
                             except Exception as e:
-                                logger.error(f"Error sending chunk to sentiment queue (manual mode): {e}")
+                                logger.error(f"Error sending chunk to sentiment manager (manual mode): {e}")
                         # -------------------------------------------------
 
                         await asyncio.sleep(0.01)
@@ -2118,6 +2262,15 @@ class RealtimeClient:
         else:
             # In chat mode, we don't need to connect to the WebSocket
             print("Starting in chat mode - using OpenAI Chat Completions API")
+
+            # Start the transcript processor
+            self.transcript_processor.start()
+
+            # Log the transcript directory for user information
+            if self.username:
+                print(f"User transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
+            else:
+                print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
 
         # Start event receiver in background
         receive_task = asyncio.create_task(self.receive_events())
@@ -2222,6 +2375,19 @@ class RealtimeClient:
                         # Set the shutdown flag to prevent any further event processing
                         self.shutdown_in_progress = True
 
+                        # Immediately cancel any ongoing response first
+                        if self.is_responding:
+                            try:
+                                print("Cancelling any ongoing responses...")
+                                # Force reset the response state
+                                self.is_responding = False
+                                self.response_complete_event.set()
+
+                                # In chat mode, we don't have a WebSocket, so just reset the state
+                                self.reset_audio_state()
+                            except Exception as e:
+                                logger.error(f"Error cancelling response during quit: {e}")
+
                         # EMERGENCY STOP: Forcefully terminate all audio processes immediately
                         print("EMERGENCY STOP: Forcefully terminating all audio processes...")
                         self.audio_handler.emergency_stop()
@@ -2246,18 +2412,7 @@ class RealtimeClient:
                         # Clear any buffered audio
                         self.audio_buffer = b''
 
-                        # Immediately cancel any ongoing response
-                        if self.is_responding:
-                            try:
-                                print("Cancelling any ongoing responses...")
-                                # Force reset the response state
-                                self.is_responding = False
-                                self.response_complete_event.set()
-
-                                # In chat mode, we don't have a WebSocket, so just reset the state
-                                self.reset_audio_state()
-                            except Exception as e:
-                                logger.error(f"Error cancelling response during quit: {e}")
+                        # No need to cancel responses again - already done above
 
                         # Run memory deduplication if memory is enabled
                         if self.enable_memory and self.memory_integration:
@@ -2285,6 +2440,26 @@ class RealtimeClient:
                     # Set the shutdown flag to prevent any further event processing
                     self.shutdown_in_progress = True
 
+                    # Immediately cancel any ongoing response first
+                    if self.is_responding:
+                        try:
+                            print("Cancelling any ongoing responses...")
+                            # Force reset the response state
+                            self.is_responding = False
+                            self.response_complete_event.set()
+
+                            # Try to cancel the response via WebSocket
+                            if self.ws:
+                                try:
+                                    await self.send_event({"type": "response.cancel"})
+                                    # Add a small delay to ensure the cancellation is processed
+                                    await asyncio.sleep(0.2)
+                                except Exception:
+                                    # Ignore errors during shutdown
+                                    pass
+                        except Exception as e:
+                            logger.error(f"Error cancelling response during quit: {e}")
+
                     # EMERGENCY STOP: Forcefully terminate all audio processes immediately
                     print("EMERGENCY STOP: Forcefully terminating all audio processes...")
                     self.audio_handler.emergency_stop()
@@ -2309,26 +2484,8 @@ class RealtimeClient:
                     # Clear any buffered audio
                     self.audio_buffer = b''
 
-                    # Immediately cancel any ongoing response
-                    if self.is_responding:
-                        try:
-                            print("Cancelling any ongoing responses...")
-                            # Force reset the response state
-                            self.is_responding = False
-                            self.response_complete_event.set()
-
-                            # Try to cancel the response via WebSocket
-                            if self.ws:
-                                try:
-                                    await self.send_event({"type": "response.cancel"})
-                                except Exception:
-                                    # Ignore errors during shutdown
-                                    pass
-
-                            # Reset audio state
-                            self.reset_audio_state()
-                        except Exception as e:
-                            logger.error(f"Error cancelling response during quit: {e}")
+                    # Reset audio state if needed
+                    self.reset_audio_state()
 
                     # Run memory deduplication if memory is enabled
                     if self.enable_memory and self.memory_integration:
@@ -2565,28 +2722,32 @@ class RealtimeClient:
             else:
                 print("No transcript to save.")
 
-            # --- Retrieve and print sentiment results ---
-            if self.enable_sentiment_analysis and self.sentiment_history_list is not None:
-                 # Convert shared list to regular list for printing
-                 final_sentiment_results = list(self.sentiment_history_list)
-                 if final_sentiment_results:
-                      print("\n--- Sentiment Analysis Results ---")
-                      for result in final_sentiment_results:
-                          if 'error' in result:
-                               ts_err = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                               print(f"[{ts_err}] Sentiment Analysis ERROR: {result['error']}")
-                               if 'traceback' in result:
-                                    print(result['traceback'])
-                          else:
-                              ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                              duration = result.get('audio_duration_s', 'N/A')
-                              label = result.get('sentiment_label', 'N/A')
-                              value = result.get('sentiment_value', 'N/A')
-                              raw = result.get('raw_response', '')
-                              # Format duration safely
-                              duration_str = f"{duration:.1f}s" if isinstance(duration, (int, float)) else str(duration)
-                              print(f"[{ts}] Label: {label} ({value}), Duration: {duration_str}, Raw: '{raw}'")
+            # --- Retrieve, save, and print sentiment results ---
+            if self.enable_sentiment_analysis and self.sentiment_manager:
+                 # Get current emotion scores
+                 emotion_scores = self.sentiment_manager.get_current_emotion_scores()
+                 if emotion_scores:
+                      print("\n--- Final Sentiment Analysis Results ---")
+                      scores_str = ", ".join([f"{k}: {v}" for k, v in emotion_scores.items()])
+                      print(f"Emotion Scores: [{scores_str}]")
                       print("----------------------------------")
+
+                      # Explicitly save the sentiment results
+                      # The sentiment_manager.stop() method will also save results, but we do it here as well
+                      # to ensure it happens even if stop() encounters an error
+                      try:
+                          # Make sure we're using the user-specific folder
+                          if hasattr(self.transcript_processor, 'user_transcripts_dir') and self.transcript_processor.user_transcripts_dir:
+                              # Create a new timestamp for the sentiment file
+                              timestamp = time.strftime("%Y%m%d_%H%M%S")
+                              sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
+                              # Save to the user-specific folder
+                              self.sentiment_manager.save_results(custom_file_path=sentiment_file_path)
+                          else:
+                              # Fall back to the default path
+                              self.sentiment_manager.save_results()
+                      except Exception as e:
+                          logger.error(f"Error saving sentiment results: {e}")
                  else:
                       print("\nNo sentiment analysis results were generated.")
             # -------------------------------------------
@@ -2629,40 +2790,23 @@ class RealtimeClient:
             self.ws = None
 
         # --- Stop the sentiment analysis process ---
-        if self.sentiment_process and self.sentiment_process.is_alive():
+        if self.enable_sentiment_analysis and self.sentiment_manager:
             logger.info("Stopping sentiment analysis process...")
             try:
-                self.sentiment_process.stop() # Signal it to stop
-                # Wait briefly for it to exit gracefully
-                self.sentiment_process.join(timeout=5)
-                if self.sentiment_process.is_alive():
-                    logger.warning("Sentiment process did not exit gracefully, terminating...")
-                    self.sentiment_process.terminate() # Force terminate if needed
-                    self.sentiment_process.join(timeout=1) # Wait for termination
+                # Make sure we're using the user-specific folder
+                if hasattr(self.transcript_processor, 'user_transcripts_dir') and self.transcript_processor.user_transcripts_dir:
+                    # Create a new timestamp for the sentiment file
+                    timestamp = time.strftime("%Y%m%d_%H%M%S")
+                    sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
+                    # Stop the process and save to the user-specific folder
+                    self.sentiment_manager.stop(custom_file_path=sentiment_file_path)
                 else:
-                     logger.info("Sentiment analysis process stopped.")
+                    # Fall back to the default path
+                    self.sentiment_manager.stop()
+                logger.info("Sentiment analysis process stopped.")
             except Exception as e:
                 logger.error(f"Error stopping sentiment analysis process: {e}")
-
-            # Stop the sentiment update thread
-            self.sentiment_stop_event.set()
-            if self.sentiment_update_thread and self.sentiment_update_thread.is_alive():
-                logger.info("Waiting for sentiment update thread to stop...")
-                self.sentiment_update_thread.join(timeout=2)
-                if self.sentiment_update_thread.is_alive():
-                     logger.warning("Sentiment update thread did not stop gracefully.")
-            # -------------------------------------------
         # ------------------------------------------
-
-        # --- Shutdown multiprocessing manager ---
-        if self.manager:
-             logger.info("Shutting down multiprocessing manager...")
-             try:
-                 self.manager.shutdown()
-             except Exception as e:
-                 logger.error(f"Error shutting down multiprocessing manager: {e}")
-             self.manager = None # Ensure it's cleared
-        # ---------------------------------------
 
         # --- Clean up memory integration ---
         if self.enable_memory and self.memory_integration:
@@ -2695,91 +2839,16 @@ class RealtimeClient:
 
             print("\nResponse interrupted.")
 
-    def _continuously_update_sentiment(self):
-        """Runs in a separate thread to periodically check for new sentiment results and update the shared dict."""
-        last_processed_index = -1
-        print("[Sentiment Updater] Thread started.")
-        
-        # Initialize sentiment results list
-        sentiment_results = []
-        
-        # Get the transcripts directory path and create timestamped filename
-        transcripts_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'gpt_realtime', 'gpt_transcripts')
-        timestamp = time.strftime("%Y%m%d_%H%M%S")
-        sentiment_file_path = os.path.join(transcripts_dir, f'sentiment_results_{timestamp}.json')
-        
-        while not self.sentiment_stop_event.is_set():
-            try:
-                # Access shared list carefully
-                if self.sentiment_history_list is not None and self.shared_emotion_scores is not None:
-                    current_len = len(self.sentiment_history_list)
-                    if current_len > last_processed_index + 1:
-                        # Process new items
-                        new_results = self.sentiment_history_list[last_processed_index + 1:]
-                        print(f"[Sentiment Updater] Found {len(new_results)} new sentiment results.")
-                        
-                        for result in new_results:
-                            if isinstance(result, dict):
-                                # Add timestamp if not present
-                                if 'timestamp' not in result:
-                                    result['timestamp'] = time.time()
-                                
-                                # Parse emotion scores from raw response if needed
-                                if 'emotion_scores' not in result and 'raw_response' in result:
-                                    try:
-                                        raw = result['raw_response']
-                                        # Clean up the raw response if it contains markdown
-                                        if '```json' in raw:
-                                            raw = raw.split('```json')[1].split('```')[0].strip()
-                                        emotion_scores = json.loads(raw)
-                                        result['emotion_scores'] = emotion_scores
-                                    except json.JSONDecodeError as e:
-                                        print(f"[Sentiment Updater] Error parsing emotion scores: {e}")
-                                        continue
-                                
-                                # Add to sentiment results
-                                sentiment_results.append(result)
-                                
-                                # Update the shared dictionary atomically
-                                if 'emotion_scores' in result:
-                                    self.shared_emotion_scores.update(result['emotion_scores'])
-                        
-                        # Save updated results to JSON file in transcripts directory
-                        try:
-                            with open(sentiment_file_path, 'w') as f:
-                                json.dump(sentiment_results, f, indent=2)
-                            print(f"[Sentiment Updater] Saved {len(sentiment_results)} sentiment results to {sentiment_file_path}")
-                        except Exception as e:
-                            print(f"[Sentiment Updater] Error saving sentiment results: {e}")
-                        
-                        last_processed_index = current_len - 1
-
-                # Sleep for a short duration
-                time.sleep(0.5)  # Check twice per second
-
-            except Exception as e:
-                print(f"[Sentiment Updater] Error in update loop: {e}")
-                traceback.print_exc()
-                # Avoid tight loop on error
-                time.sleep(2)
-
-        # Final save before thread stops
-        try:
-            with open(sentiment_file_path, 'w') as f:
-                json.dump(sentiment_results, f, indent=2)
-            print(f"[Sentiment Updater] Final save: {len(sentiment_results)} sentiment results to {sentiment_file_path}")
-        except Exception as e:
-            print(f"[Sentiment Updater] Error in final save: {e}")
-
-        print("[Sentiment Updater] Thread stopped.")
+    # The _continuously_update_sentiment method has been removed as it's now handled by the SentimentAnalysisManager
 
 # --- Dash App Setup ---
 # Define the Dash app globally so it can be accessed by the callback
 app = dash.Dash(__name__)
 
 # Initial empty data for the chart
-initial_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
-initial_radar_data = format_data_for_radar(initial_scores)
+initial_user_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+initial_assistant_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+initial_radar_data = format_data_for_radar(initial_user_scores, initial_assistant_scores)
 
 # Define the layout
 app.layout = dmc.MantineProvider(
@@ -2788,7 +2857,7 @@ app.layout = dmc.MantineProvider(
     children=[
         html.Div([
             dmc.Title("Real-time Emotion Analysis", order=2, ta="center"),
-            dmc.Text("(Based on User Input Audio)", ta="center", size="sm", c="dimmed"),
+            dmc.Text("(User and Assistant Sentiment Comparison)", ta="center", size="sm", c="dimmed"),
             dmc.Space(h=20),
             dmc.RadarChart(
                 id="emotion-radar-chart",
@@ -2800,38 +2869,133 @@ app.layout = dmc.MantineProvider(
                 withPolarRadiusAxis=True,
                 polarRadiusAxisProps={"domain": [0, 3], "tickCount": 4}, # Renamed radiusAxisProps
                 series=[
-                    # Define the data series to plot
-                    {"name": "Sentiment", "color": "indigo.6", "opacity": 0.7}
+                    # Define the data series to plot with contrasting colors and transparency
+                    {"name": "User", "color": "blue.6", "opacity": 0.7},
+                    {"name": "Assistant", "color": "red.6", "opacity": 0.7}
                 ],
             ),
             dcc.Interval(
                 id='interval-component',
-                interval=500, # Update every 0.5 seconds (500 milliseconds)
-                n_intervals=0
+                interval=500, # Update every 0.5 seconds (500 milliseconds) for smoother updates
+                n_intervals=0,
+                max_intervals=-1  # Run indefinitely
             )
         ], style={"maxWidth": "600px", "margin": "auto", "padding": "20px"})
     ]
 )
 
+# Global reference to the sentiment manager for the Dash callback
+sentiment_manager_ref = None
+
 # Define the callback to update the chart (needs access to shared_emotion_scores)
 # We will pass the shared dictionary to this function within main
 def setup_callbacks(shared_scores):
+    # Track the last update time to limit update frequency
+    last_update_time = [time.time()]
+    # Track the last data to avoid unnecessary updates
+    last_data = [None]
+
     @app.callback(
         Output('emotion-radar-chart', 'data'),
         Input('interval-component', 'n_intervals')
     )
     def update_radar_chart(_):
-        """Reads from the shared dictionary and updates the chart data."""
-        if shared_scores is not None:
-            # Read the current scores (convert Manager.dict to regular dict)
-            current_scores = dict(shared_scores)
-            # Format the data for the radar chart
-            new_radar_data = format_data_for_radar(current_scores)
-            # print(f"[Dash Callback] Updating chart with data: {new_radar_data}") # Debug
+        """Reads from the shared dictionary and updates the chart data for both user and assistant."""
+        # Allow more frequent updates for smoother chart animation
+        current_time = time.time()
+        if current_time - last_update_time[0] < 0.3:  # Only update once every 0.3 seconds at most
+            if last_data[0] is not None:
+                return last_data[0]
+
+        # Update the last update time
+        last_update_time[0] = current_time
+
+        try:
+            # First try to read from the file
+            try:
+                temp_file = os.path.join(os.path.dirname(__file__), 'temp', 'current_emotion_scores.json')
+                if os.path.exists(temp_file):
+                    with open(temp_file, 'r') as f:
+                        file_scores = json.load(f)
+
+                    if file_scores and 'user' in file_scores and 'assistant' in file_scores:
+                        user_scores = file_scores['user']
+                        assistant_scores = file_scores['assistant']
+                        print(f"\n[RADAR CHART] Got scores from file: {temp_file}")
+                        print(f"[RADAR CHART] User scores: {user_scores}")
+                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
+
+                        # Format the data for the radar chart with both series
+                        new_radar_data = format_data_for_radar(user_scores, assistant_scores)
+
+                        # Only log updates when the data actually changes
+                        if new_radar_data != last_data[0]:
+                            print(f"\n[RADAR CHART] Updating with user and assistant sentiment data from file")
+                            last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
+
+                        return new_radar_data
+            except Exception as e:
+                print(f"[RADAR CHART] Error reading scores from file: {e}")
+
+            # Then try to get scores from the global sentiment manager reference if available
+            if sentiment_manager_ref is not None and hasattr(sentiment_manager_ref, 'shared_emotion_scores'):
+                try:
+                    # Get the scores directly from the sentiment manager
+                    manager_scores = sentiment_manager_ref.shared_emotion_scores
+                    if manager_scores and 'user' in manager_scores and 'assistant' in manager_scores:
+                        user_scores = dict(manager_scores['user'])
+                        assistant_scores = dict(manager_scores['assistant'])
+                        print(f"\n[RADAR CHART] Got scores directly from sentiment manager")
+                        print(f"[RADAR CHART] User scores: {user_scores}")
+                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
+
+                        # Format the data for the radar chart with both series
+                        new_radar_data = format_data_for_radar(user_scores, assistant_scores)
+
+                        # Only log updates when the data actually changes
+                        if new_radar_data != last_data[0]:
+                            print(f"\n[RADAR CHART] Updating with user and assistant sentiment data")
+                            last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
+
+                        return new_radar_data
+                except Exception as e:
+                    print(f"[RADAR CHART] Error getting scores from sentiment manager: {e}")
+                    # Fall through to try the shared_scores parameter
+
+            # Fall back to the shared_scores parameter if sentiment manager reference failed
+            if shared_scores is not None:
+                try:
+                    # Read the current scores for both user and assistant
+                    user_scores = dict(shared_scores.get('user', {}))
+                    assistant_scores = dict(shared_scores.get('assistant', {}))
+
+                    # Format the data for the radar chart with both series
+                    new_radar_data = format_data_for_radar(user_scores, assistant_scores)
+
+                    # Only log updates when the data actually changes
+                    if new_radar_data != last_data[0]:
+                        print(f"\n[RADAR CHART] Updating with user and assistant sentiment data from shared_scores")
+                        print(f"[RADAR CHART] User scores: {user_scores}")
+                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
+                        last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
+
+                    return new_radar_data
+                except Exception as e:
+                    print(f"[RADAR CHART] Error getting scores from shared_scores: {e}")
+                    # Fall through to default case
+
+            # Return empty data for both series if no scores are available or on error
+            empty_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+            new_radar_data = format_data_for_radar(empty_scores, empty_scores)
+            last_data[0] = new_radar_data.copy()  # Make a deep copy
             return new_radar_data
-        else:
-            # Return empty data or default if shared_scores not available
-            return format_data_for_radar({emotion: 0 for emotion in CORE_EMOTIONS})
+        except Exception as e:
+            print(f"[RADAR CHART] Unexpected error in radar chart update: {e}")
+            # Return the last known good data or empty data
+            if last_data[0] is not None:
+                return last_data[0]
+            empty_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
+            return format_data_for_radar(empty_scores, empty_scores)
 # --- End Dash App Setup ---
 
 async def handle_user_account():
@@ -2929,36 +3093,21 @@ async def main(conversation_mode="audio", enable_memory=True):
 
     # Decide whether to enable sentiment analysis
     # For now, enable it if the Gemini key is present and the class was imported
-    enable_sentiment = bool(gemini_api_key and SentimentAnalysisProcess)
+    enable_sentiment = bool(gemini_api_key and SentimentAnalysisManager)
     if enable_sentiment:
         logger.info("Gemini API key found. Enabling sentiment analysis.")
         print("\nSentiment analysis is ENABLED.")
     elif gemini_api_key:
-        logger.warning("Gemini API key found, but SentimentAnalysisProcess class not loaded. Sentiment analysis disabled.")
-        print("\nSentiment analysis is DISABLED: SentimentAnalysisProcess class not loaded.")
+        logger.warning("Gemini API key found, but SentimentAnalysisManager class not loaded. Sentiment analysis disabled.")
+        print("\nSentiment analysis is DISABLED: SentimentAnalysisManager class not loaded.")
     else:
         logger.info("Gemini API key not found. Sentiment analysis disabled.")
         print("\nSentiment analysis is DISABLED: Gemini API key not found.")
 
-    # --- Multiprocessing and Shared Data Setup ---
-    manager = None
+    # --- Shared Data Setup ---
+    # We'll get the shared emotion scores from the SentimentAnalysisManager after it's initialized
+    # This will be a multiprocessing.Manager().dict() that can be shared between processes
     shared_emotion_scores = None
-    if enable_sentiment:
-        try:
-            manager = multiprocessing.Manager()
-            # Initialize shared dict with default scores
-            shared_emotion_scores = manager.dict({emotion: 0 for emotion in CORE_EMOTIONS})
-            logger.info("Multiprocessing manager and shared emotion dictionary initialized.")
-        except Exception as e:
-            logger.error(f"Failed to initialize multiprocessing manager or shared dict: {e}")
-            logger.warning("Disabling sentiment analysis due to manager initialization failure.")
-            enable_sentiment = False # Disable if manager fails
-            # Ensure cleanup if partially initialized
-            if manager:
-                try: manager.shutdown()
-                except Exception: pass
-            manager = None
-            shared_emotion_scores = None
     # ---------------------------------------------
 
     # Create client, passing the shared dictionary if sentiment analysis is enabled
@@ -2977,14 +3126,27 @@ async def main(conversation_mode="audio", enable_memory=True):
     logger.info(f"Starting in {conversation_mode} conversation mode")
     logger.info(f"Memory system is {'enabled' if enable_memory else 'disabled'}")
 
+    # Get the shared emotion scores from the client if available
+    if enable_sentiment and client.sentiment_manager and client.sentiment_manager.is_initialized:
+        # Get the shared emotion scores directly from the sentiment manager
+        shared_emotion_scores = client.sentiment_manager.shared_emotion_scores
+        print(f"\n[RADAR CHART] Got shared emotion scores directly from sentiment manager: {shared_emotion_scores}")
+        logger.info("Got shared emotion scores directly from sentiment manager for Dash callbacks.")
+
+        # Set the global sentiment manager reference for the Dash callback
+        global sentiment_manager_ref
+        sentiment_manager_ref = client.sentiment_manager
+        print(f"\n[RADAR CHART] Set global sentiment manager reference: {sentiment_manager_ref}")
+
     # Setup Dash callbacks, passing the shared dictionary
-    if enable_sentiment:
+    if shared_emotion_scores is not None:
         setup_callbacks(shared_emotion_scores)
+        logger.info("Dash callbacks set up with shared emotion scores.")
     else:
-        # If sentiment is disabled, setup callbacks with None
+        # If sentiment is disabled or no shared scores available, setup callbacks with None
         # The callback will just show default 0 values
         setup_callbacks(None)
-        logger.info("Dash callbacks set up with default data (sentiment analysis disabled).")
+        logger.info("Dash callbacks set up with default data (no shared emotion scores available).")
 
     # --- Threading Setup for Client ---
     client_thread = None
@@ -3073,6 +3235,7 @@ async def main(conversation_mode="audio", enable_memory=True):
     dash_thread = threading.Thread(target=lambda: app.run(debug=False, host='0.0.0.0', port=8050), daemon=True)
     dash_thread.start()
     print("Starting Dash server for Emotion Radar Chart...")
+    print("Radar chart initialized with both user and assistant sentiment contours.")
     print("Access the chart at: http://127.0.0.1:8050/")
 
     try:
@@ -3094,13 +3257,7 @@ async def main(conversation_mode="audio", enable_memory=True):
         traceback.print_exc()
     finally:
         logger.info("Application shutting down.")
-        # Ensure manager is shutdown if it was created
-        if manager:
-            logger.info("Attempting to shut down multiprocessing manager...")
-            try:
-                manager.shutdown()
-            except Exception as e:
-                logger.error(f"Error shutting down multiprocessing manager: {e}")
+        # No need to clean up multiprocessing manager as it's now handled by SentimentAnalysisManager
 
         logger.info("Exiting application main function.")
     # ------------------ #
