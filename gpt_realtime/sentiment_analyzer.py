@@ -175,17 +175,19 @@ class SentimentAnalysisProcess(multiprocessing.Process):
         timestamp = text_chunk.get('timestamp', time.time())
 
         try:
-            # Define the prompt for text sentiment analysis
+            # Define the prompt for text sentiment analysis with continuous values
             prompt = """Analyze the emotional state expressed in this text based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0 to 3 indicating its intensity in the text:
-- 0: Emotion is absent.
-- 1: Low intensity (e.g., Serenity for Joy, Apprehension for Fear).
-- 2: Medium intensity (e.g., Joy for Joy, Fear for Fear).
-- 3: High intensity (e.g., Ecstasy for Joy, Terror for Fear).
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the text, using decimal values for more nuanced assessment:
+- 0.0: Emotion is completely absent.
+- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
+- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
+- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its integer score (0, 1, 2, or 3). Example format:
-{"Joy": 0, "Trust": 1, "Fear": 0, "Surprise": 2, "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 1}"""
+Use decimal values (like 1.5, 2.3, etc.) to represent subtle gradations between intensity levels, creating a more continuous emotional space.
+
+Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+{"Joy": 0.0, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.0, "Disgust": 0.0, "Anger": 0.0, "Anticipation": 1.7}"""
 
             # Call the Gemini model
             response = self.sentiment_client.models.generate_content(
@@ -219,9 +221,11 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 parsed_json = json.loads(cleaned_text)
                 if isinstance(parsed_json, dict):
                     # Validate and update scores, keeping defaults for missing/invalid keys
+                    # Support both integer and float values for more continuous emotional representation
                     for emotion in emotion_scores.keys():
-                        if emotion in parsed_json and isinstance(parsed_json[emotion], int) and 0 <= parsed_json[emotion] <= 3:
-                            emotion_scores[emotion] = parsed_json[emotion]
+                        if emotion in parsed_json and isinstance(parsed_json[emotion], (int, float)) and 0 <= parsed_json[emotion] <= 3:
+                            # Convert to float for continuous representation
+                            emotion_scores[emotion] = float(parsed_json[emotion])
                 else:
                     print(f"[Sentiment Analysis] WARNING: Parsed JSON is not a dictionary: '{cleaned_text}'. Using default scores.")
             except json.JSONDecodeError:
@@ -369,17 +373,19 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
 
             # print(f"[Sentiment Analysis] File is ACTIVE. URI: {audio_file_resource.uri}") # Debug
 
-            # Define the prompt precisely matching the one in gemini_live_audio.py
+            # Define the prompt for audio sentiment analysis with continuous values
             prompt = """Analyze the user's emotional state expressed in this audio based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0 to 3 indicating its intensity in the audio:
-- 0: Emotion is absent.
-- 1: Low intensity (e.g., Serenity for Joy, Apprehension for Fear).
-- 2: Medium intensity (e.g., Joy for Joy, Fear for Fear).
-- 3: High intensity (e.g., Ecstasy for Joy, Terror for Fear).
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the audio, using decimal values for more nuanced assessment:
+- 0.0: Emotion is completely absent.
+- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
+- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
+- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its integer score (0, 1, 2, or 3). Example format:
-{"Joy": 0, "Trust": 1, "Fear": 0, "Surprise": 2, "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 1}"""
+Use decimal values (like 1.5, 2.3, etc.) to represent subtle gradations between intensity levels, creating a more continuous emotional space.
+
+Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+{"Joy": 0.0, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.0, "Disgust": 0.0, "Anger": 0.0, "Anticipation": 1.7}"""
 
             # Call the Gemini model via the client's model interface
             # print("[Sentiment Analysis] Calling Gemini API for sentiment...") # Debug
@@ -420,9 +426,11 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 parsed_json = json.loads(cleaned_text)
                 if isinstance(parsed_json, dict):
                      # Validate and update scores, keeping defaults for missing/invalid keys
+                     # Support both integer and float values for more continuous emotional representation
                      for emotion in emotion_scores.keys():
-                         if emotion in parsed_json and isinstance(parsed_json[emotion], int) and 0 <= parsed_json[emotion] <= 3:
-                             emotion_scores[emotion] = parsed_json[emotion]
+                         if emotion in parsed_json and isinstance(parsed_json[emotion], (int, float)) and 0 <= parsed_json[emotion] <= 3:
+                             # Convert to float for continuous representation
+                             emotion_scores[emotion] = float(parsed_json[emotion])
                          # else: # Optional: Log if an expected emotion is missing or invalid
                          #     print(f"[Sentiment Analysis] WARNING: Missing or invalid score for '{emotion}' in response: {parsed_json.get(emotion)}")
                 else:
