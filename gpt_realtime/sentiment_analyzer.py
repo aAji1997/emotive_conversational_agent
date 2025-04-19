@@ -22,8 +22,6 @@ class SentimentAnalysisProcess(multiprocessing.Process):
     This runs independently to avoid blocking the main audio processing loop.
     Audio chunks (dictionaries with 'source', 'data', 'rate') are received via a queue.
     Results (dictionaries with 'timestamp', 'sentiment_value', etc.) are placed in a shared list.
-
-    Mirrors the sentiment analysis logic from gemini_live_audio.py.
     """
 
     def __init__(self, api_key, sentiment_model_name, audio_queue, sentiment_history_list):
