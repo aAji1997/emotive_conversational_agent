@@ -219,6 +219,8 @@ class RealtimeClient:
         self.sentiment_model_name = "models/gemini-2.0-flash"
         self.shared_emotion_scores = shared_emotion_scores  # This will be updated after initialization
         self.sentiment_manager = None
+        self.sentiment_file_saved = False  # Track if we've saved a sentiment file
+        self.sentiment_file_path = None  # Store the path to the sentiment file
 
         if self.enable_sentiment_analysis:
             if not self.google_api_key:
@@ -322,13 +324,14 @@ class RealtimeClient:
                 logger.info("Starting sentiment analysis process...")
                 try:
                     # Get the transcript directory for saving sentiment results
-                    sentiment_file_path = None
                     if hasattr(self.transcript_processor, 'user_transcripts_dir'):
+                        # Use the same timestamp as the conversation for consistent file naming
                         timestamp = time.strftime("%Y%m%d_%H%M%S")
-                        sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
+                        self.sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
+                        print(f"Sentiment results will be saved to: {self.sentiment_file_path}")
 
                     # Start the sentiment analysis process
-                    if not self.sentiment_manager.start(sentiment_file_path):
+                    if not self.sentiment_manager.start(self.sentiment_file_path):
                         raise ValueError("Failed to start sentiment analysis process")
 
                     logger.info("Sentiment analysis process started successfully.")
@@ -2732,20 +2735,19 @@ class RealtimeClient:
                       print(f"Emotion Scores: [{scores_str}]")
                       print("----------------------------------")
 
-                      # Explicitly save the sentiment results
+                      # Explicitly save the sentiment results if we haven't already
                       # The sentiment_manager.stop() method will also save results, but we do it here as well
                       # to ensure it happens even if stop() encounters an error
                       try:
-                          # Make sure we're using the user-specific folder
-                          if hasattr(self.transcript_processor, 'user_transcripts_dir') and self.transcript_processor.user_transcripts_dir:
-                              # Create a new timestamp for the sentiment file
-                              timestamp = time.strftime("%Y%m%d_%H%M%S")
-                              sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
-                              # Save to the user-specific folder
-                              self.sentiment_manager.save_results(custom_file_path=sentiment_file_path)
-                          else:
+                          if not self.sentiment_file_saved and self.sentiment_file_path:
+                              # Save to the user-specific folder using our consistent file path
+                              self.sentiment_manager.save_results(custom_file_path=self.sentiment_file_path)
+                              print(f"Saved sentiment analysis results to: {self.sentiment_file_path}")
+                              self.sentiment_file_saved = True
+                          elif not self.sentiment_file_path:
                               # Fall back to the default path
                               self.sentiment_manager.save_results()
+                              self.sentiment_file_saved = True
                       except Exception as e:
                           logger.error(f"Error saving sentiment results: {e}")
                  else:
@@ -2793,16 +2795,18 @@ class RealtimeClient:
         if self.enable_sentiment_analysis and self.sentiment_manager:
             logger.info("Stopping sentiment analysis process...")
             try:
-                # Make sure we're using the user-specific folder
-                if hasattr(self.transcript_processor, 'user_transcripts_dir') and self.transcript_processor.user_transcripts_dir:
-                    # Create a new timestamp for the sentiment file
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
-                    # Stop the process and save to the user-specific folder
-                    self.sentiment_manager.stop(custom_file_path=sentiment_file_path)
+                # Save sentiment results if we haven't already
+                if not self.sentiment_file_saved and self.sentiment_file_path:
+                    # Stop the process and save to the user-specific folder using our consistent file path
+                    self.sentiment_manager.stop(custom_file_path=self.sentiment_file_path)
+                    print(f"Saved sentiment analysis results to: {self.sentiment_file_path}")
+                    self.sentiment_file_saved = True
                 else:
-                    # Fall back to the default path
+                    # Either we've already saved or we don't have a file path
+                    # Fall back to the default path if needed
                     self.sentiment_manager.stop()
+                    if not self.sentiment_file_saved:
+                        self.sentiment_file_saved = True
                 logger.info("Sentiment analysis process stopped.")
             except Exception as e:
                 logger.error(f"Error stopping sentiment analysis process: {e}")
