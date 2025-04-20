@@ -727,48 +727,65 @@ class RealtimeClient:
                             print(f"\n[MEMORY INTEGRATION] Processing user audio transcript with memory agent (final transcript)")
 
                             # Check if this message might need memory context
-                            # We're being more selective now - only check for memories when it seems relevant
                             retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(transcript)
 
-                            # Only check for location-related terms if the message is a question or seems to be asking about location
+                            # Check for location-related terms
                             location_terms = ['where', 'live', 'location', 'address', 'city', 'state', 'country', 'from', 'reside']
                             contains_question = '?' in transcript or any(q in transcript.lower() for q in ['what', 'where', 'when', 'how', 'who', 'why'])
                             might_need_location = contains_question and any(term in transcript.lower() for term in location_terms)
 
-                            # For location-related queries, we'll handle the response creation differently
-                            # to prevent the "I don't know" followed by "Actually I do know" issue
-                            if retrieval_intent or might_need_location:
-                                if retrieval_intent:
-                                    print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent (final transcript): '{transcript[:50]}...'")
-                                elif might_need_location:
-                                    print(f"\n[MEMORY INTEGRATION] Detected location-related question (final transcript): '{transcript[:50]}...'")
+                            # Check for greeting messages that should be personalized
+                            greeting_terms = ['hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']
+                            is_greeting = any(term in transcript.lower() for term in greeting_terms) and len(transcript.split()) < 5
 
-                                # For location queries, we'll skip the normal response creation
-                                # and only create a response after memory retrieval
+                            # Always check for memory context before responding to avoid double greetings
+                            # This implements Option 2: Combine initial and follow-up responses
+
+                            # For all user inputs, we'll check for memory context first before responding
+                            # This prevents the double greeting issue and improves all responses
+                            if True:  # Always execute this block
+                                if retrieval_intent:
+                                    print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent: '{transcript[:50]}...'")
+                                elif might_need_location:
+                                    print(f"\n[MEMORY INTEGRATION] Detected location-related question: '{transcript[:50]}...'")
+                                elif is_greeting and self.username:
+                                    print(f"\n[MEMORY INTEGRATION] Detected greeting message, will personalize with username: '{self.username}'")
+                                else:
+                                    print(f"\n[MEMORY INTEGRATION] Checking for memory context before responding")
+
+                                # Skip the normal response creation and only create after memory check
                                 create_response = False
 
                                 # Print a message to the console to indicate we're waiting for memory retrieval
-                                print(f"\n[MEMORY INTEGRATION] Delaying response for location query until memory retrieval completes")
+                                print(f"\n[MEMORY INTEGRATION] Delaying response until memory context check completes")
 
                                 # ===== MEMORY QUERY SUPPRESSION MECHANISM =====
-                                # This is a bespoke solution to fix the "I don't know/Actually I do know" problem
-                                # When a memory-related query is detected, we need to suppress the initial incorrect response
-                                # that would say "I don't know where you live" and only play the second response that has
-                                # the correct memory context.
+                                # This is a bespoke solution to fix response issues with memory context
+                                # We've extended it to work for all types of user inputs, not just location queries
+                                # This prevents double greetings and other response issues
                                 #
                                 # The approach works as follows:
-                                # 1. Set memory_query_in_progress flag when a memory query is detected
+                                # 1. Set memory_query_in_progress flag for all user inputs
                                 # 2. Initialize response counter to track which response we're on
-                                # 3. In the audio playback code, we check this flag and only play the second response
+                                # 3. In the audio playback code, we check this flag and only play responses with memory context
                                 # 4. After playing the correct response, we reset the flag to normal operation
                                 #
                                 # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
-                                # It's critical for providing a good user experience with memory-related queries.
+                                # It's critical for providing a good user experience with consistent responses.
                                 self.memory_query_in_progress = True
                                 self.memory_response_counter = 0
-                                print(f"\n[MEMORY INTEGRATION] Memory query mode activated - will suppress initial response")
+                                print(f"\n[MEMORY INTEGRATION] Memory context check mode activated - will ensure consistent responses")
 
-                                # Add a system message first to instruct the model about location information
+                                # Add an appropriate system message based on the type of input
+                                system_message = ""
+                                if might_need_location:
+                                    system_message = "IMPORTANT INSTRUCTION: The user is asking about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                elif is_greeting and self.username:
+                                    system_message = f"IMPORTANT INSTRUCTION: The user's name is {self.username}. Make sure to personalize your greeting with their name."
+                                else:
+                                    system_message = "IMPORTANT INSTRUCTION: Wait for any memory context that might be provided before responding to ensure your response is personalized and accurate."
+
+                                # Send the system message
                                 await self.send_event({
                                     "type": "conversation.item.create",
                                     "item": {
@@ -776,7 +793,7 @@ class RealtimeClient:
                                         "role": "system",
                                         "content": [{
                                             "type": "input_text",
-                                            "text": "IMPORTANT INSTRUCTION: The user is about to ask about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                            "text": system_message
                                         }]
                                     }
                                 })
@@ -798,8 +815,11 @@ class RealtimeClient:
                                 await asyncio.sleep(0.2)
 
                                 # Get memory context and create a response with it
-                                print(f"\n[MEMORY INTEGRATION] Retrieving memory context for location query")
-                                memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=True)
+                                print(f"\n[MEMORY INTEGRATION] Retrieving memory context for user input")
+                                # Force retrieval for location queries and memory retrieval intents
+                                # For greetings and other inputs, use normal retrieval
+                                force_retrieval = retrieval_intent or might_need_location
+                                memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=force_retrieval)
 
                                 if memory_context and len(memory_context.strip()) > 0:
                                     print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
@@ -823,8 +843,25 @@ class RealtimeClient:
                                     self.response_complete_event.clear()
                                     await self.send_event({"type": "response.create"})
                                 else:
-                                    # If no memory context was found, create a normal response
-                                    print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+                                    # If no memory context was found, but we have a username for a greeting
+                                    if is_greeting and self.username:
+                                        # Add a simple system message with the username for greetings
+                                        print(f"\n[MEMORY INTEGRATION] No memory context found, but adding username for greeting")
+                                        await self.send_event({
+                                            "type": "conversation.item.create",
+                                            "item": {
+                                                "type": "message",
+                                                "role": "system",
+                                                "content": [{
+                                                    "type": "input_text",
+                                                    "text": f"The user's name is {self.username}. Greet them by name."
+                                                }]
+                                            }
+                                        })
+                                    else:
+                                        # If no memory context was found, create a normal response
+                                        print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+
                                     self.is_responding = True
                                     self.response_complete_event.clear()
                                     await self.send_event({"type": "response.create"})
@@ -877,48 +914,65 @@ class RealtimeClient:
                                     print(f"\n[MEMORY INTEGRATION] Processing user audio transcript with memory agent (conversation item)")
 
                                     # Check if this message might need memory context
-                                    # We're being more selective now - only check for memories when it seems relevant
                                     retrieval_intent = self.memory_integration._detect_memory_retrieval_intent(transcript)
 
-                                    # Only check for location-related terms if the message is a question or seems to be asking about location
+                                    # Check for location-related terms
                                     location_terms = ['where', 'live', 'location', 'address', 'city', 'state', 'country', 'from', 'reside']
                                     contains_question = '?' in transcript or any(q in transcript.lower() for q in ['what', 'where', 'when', 'how', 'who', 'why'])
                                     might_need_location = contains_question and any(term in transcript.lower() for term in location_terms)
 
-                                    # For location-related queries, we'll handle the response creation differently
-                                    # to prevent the "I don't know" followed by "Actually I do know" issue
-                                    if retrieval_intent or might_need_location:
-                                        if retrieval_intent:
-                                            print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent (conversation item): '{transcript[:50]}...'")
-                                        elif might_need_location:
-                                            print(f"\n[MEMORY INTEGRATION] Detected location-related question (conversation item): '{transcript[:50]}...'")
+                                    # Check for greeting messages that should be personalized
+                                    greeting_terms = ['hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']
+                                    is_greeting = any(term in transcript.lower() for term in greeting_terms) and len(transcript.split()) < 5
 
-                                        # For location queries, we'll skip the normal response creation
-                                        # and only create a response after memory retrieval
+                                    # Always check for memory context before responding to avoid double greetings
+                                    # This implements Option 2: Combine initial and follow-up responses
+
+                                    # For all user inputs, we'll check for memory context first before responding
+                                    # This prevents the double greeting issue and improves all responses
+                                    if True:  # Always execute this block
+                                        if retrieval_intent:
+                                            print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent: '{transcript[:50]}...'")
+                                        elif might_need_location:
+                                            print(f"\n[MEMORY INTEGRATION] Detected location-related question: '{transcript[:50]}...'")
+                                        elif is_greeting and self.username:
+                                            print(f"\n[MEMORY INTEGRATION] Detected greeting message, will personalize with username: '{self.username}'")
+                                        else:
+                                            print(f"\n[MEMORY INTEGRATION] Checking for memory context before responding")
+
+                                        # Skip the normal response creation and only create after memory check
                                         create_response = False
 
                                         # Print a message to the console to indicate we're waiting for memory retrieval
-                                        print(f"\n[MEMORY INTEGRATION] Delaying response for location query until memory retrieval completes")
+                                        print(f"\n[MEMORY INTEGRATION] Delaying response until memory context check completes")
 
                                         # ===== MEMORY QUERY SUPPRESSION MECHANISM =====
-                                        # This is a bespoke solution to fix the "I don't know/Actually I do know" problem
-                                        # When a memory-related query is detected, we need to suppress the initial incorrect response
-                                        # that would say "I don't know where you live" and only play the second response that has
-                                        # the correct memory context.
+                                        # This is a bespoke solution to fix response issues with memory context
+                                        # We've extended it to work for all types of user inputs, not just location queries
+                                        # This prevents double greetings and other response issues
                                         #
                                         # The approach works as follows:
-                                        # 1. Set memory_query_in_progress flag when a memory query is detected
+                                        # 1. Set memory_query_in_progress flag for all user inputs
                                         # 2. Initialize response counter to track which response we're on
-                                        # 3. In the audio playback code, we check this flag and only play the second response
+                                        # 3. In the audio playback code, we check this flag and only play responses with memory context
                                         # 4. After playing the correct response, we reset the flag to normal operation
                                         #
                                         # DO NOT REMOVE OR MODIFY THIS MECHANISM without understanding the implications!
-                                        # It's critical for providing a good user experience with memory-related queries.
+                                        # It's critical for providing a good user experience with consistent responses.
                                         self.memory_query_in_progress = True
                                         self.memory_response_counter = 0
-                                        print(f"\n[MEMORY INTEGRATION] Memory query mode activated - will suppress initial response")
+                                        print(f"\n[MEMORY INTEGRATION] Memory context check mode activated - will ensure consistent responses")
 
-                                        # Add a system message first to instruct the model about location information
+                                        # Add an appropriate system message based on the type of input
+                                        system_message = ""
+                                        if might_need_location:
+                                            system_message = "IMPORTANT INSTRUCTION: The user is asking about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                        elif is_greeting and self.username:
+                                            system_message = f"IMPORTANT INSTRUCTION: The user's name is {self.username}. Make sure to personalize your greeting with their name."
+                                        else:
+                                            system_message = "IMPORTANT INSTRUCTION: Wait for any memory context that might be provided before responding to ensure your response is personalized and accurate."
+
+                                        # Send the system message
                                         await self.send_event({
                                             "type": "conversation.item.create",
                                             "item": {
@@ -926,7 +980,7 @@ class RealtimeClient:
                                                 "role": "system",
                                                 "content": [{
                                                     "type": "input_text",
-                                                    "text": "IMPORTANT INSTRUCTION: The user is about to ask about their location. DO NOT claim you don't know where they live. Instead, wait for the memory context that will be provided before responding."
+                                                    "text": system_message
                                                 }]
                                             }
                                         })
@@ -948,8 +1002,11 @@ class RealtimeClient:
                                         await asyncio.sleep(0.2)
 
                                         # Get memory context and create a response with it
-                                        print(f"\n[MEMORY INTEGRATION] Retrieving memory context for location query")
-                                        memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=True)
+                                        print(f"\n[MEMORY INTEGRATION] Retrieving memory context for user input")
+                                        # Force retrieval for location queries and memory retrieval intents
+                                        # For greetings and other inputs, use normal retrieval
+                                        force_retrieval = retrieval_intent or might_need_location
+                                        memory_context = await self.memory_integration.get_context_with_memories(transcript, force_retrieval=force_retrieval)
 
                                         if memory_context and len(memory_context.strip()) > 0:
                                             print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
@@ -984,13 +1041,29 @@ class RealtimeClient:
                                             self.response_complete_event.clear()
                                             await self.send_event({"type": "response.create"})
                                         else:
-                                            # If no memory context was found, create a normal response
-                                            print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
+                                            # If no memory context was found, but we have a username for a greeting
+                                            if is_greeting and self.username:
+                                                # Add a simple system message with the username for greetings
+                                                print(f"\n[MEMORY INTEGRATION] No memory context found, but adding username for greeting")
+                                                await self.send_event({
+                                                    "type": "conversation.item.create",
+                                                    "item": {
+                                                        "type": "message",
+                                                        "role": "system",
+                                                        "content": [{
+                                                            "type": "input_text",
+                                                            "text": f"The user's name is {self.username}. Greet them by name."
+                                                        }]
+                                                    }
+                                                })
+                                            else:
+                                                # If no memory context was found, create a normal response
+                                                print(f"\n[MEMORY INTEGRATION] No memory context found, creating normal response")
 
-                                            # Reset memory retrieval mode since we didn't find any context
-                                            self.audio_handler.set_memory_retrieval_mode(False)
-                                            self.transcript_processor.set_memory_retrieval_mode(False)
-                                            print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset (no context found)")
+                                                # Reset memory retrieval mode since we didn't find any context
+                                                self.audio_handler.set_memory_retrieval_mode(False)
+                                                self.transcript_processor.set_memory_retrieval_mode(False)
+                                                print(f"\n[MEMORY INTEGRATION] Memory retrieval mode reset (no context found)")
 
                                             self.is_responding = True
                                             self.response_complete_event.clear()
@@ -1376,6 +1449,20 @@ class RealtimeClient:
             memory_context (str): The memory context to add to the follow-up response
         """
         try:
+            # Check if we're already in memory query mode - if so, we don't need a follow-up
+            # This prevents double greetings and other duplicate responses
+            if hasattr(self, 'memory_query_in_progress') and self.memory_query_in_progress:
+                print(f"\n[MEMORY INTEGRATION] Skipping follow-up response - memory context already being handled")
+                return False
+
+            # Check if the memory context contains the username and it's a greeting response
+            # If so, we don't need to add a follow-up since we've already personalized the greeting
+            if self.username and self.username in memory_context and hasattr(self, 'current_audio_response_text'):
+                # Check if the current response already contains a greeting with the username
+                if self.username in self.current_audio_response_text and any(term in self.current_audio_response_text.lower() for term in ['hi', 'hello', 'hey']):
+                    print(f"\n[MEMORY INTEGRATION] Skipping follow-up response - greeting already personalized with username")
+                    return False
+
             # Add a small delay to ensure the previous response is fully processed
             await asyncio.sleep(0.5)
 
@@ -1444,13 +1531,24 @@ class RealtimeClient:
         if not self.enable_memory or not self.memory_integration:
             return False
 
+        # Check if we're already in memory query mode - if so, we don't need to add context again
+        # This prevents duplicate memory context additions
+        if hasattr(self, 'memory_query_in_progress') and self.memory_query_in_progress:
+            print(f"\n[MEMORY INTEGRATION] Skipping memory context addition - already in memory query mode")
+            return False
+
         try:
             print(f"\n[MEMORY INTEGRATION] Retrieving memory context for audio transcript: '{text[:50]}...'")
             logger.info(f"Retrieving memory context for audio transcript in {self.conversation_mode} mode")
 
-            # Only force retrieval when explicitly requested
+            # Check for greeting messages that should be personalized
+            greeting_terms = ['hello', 'hi', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening']
+            is_greeting = any(term in text.lower() for term in greeting_terms) and len(text.split()) < 5
+
+            # Only force retrieval when explicitly requested or for greetings with username
             # This makes memory retrieval more selective and contextual
-            memory_context = await self.memory_integration.get_context_with_memories(text, force_retrieval=force_retrieval)
+            should_force = force_retrieval or (is_greeting and self.username)
+            memory_context = await self.memory_integration.get_context_with_memories(text, force_retrieval=should_force)
 
             if memory_context and len(memory_context.strip()) > 0:
                 print(f"\n[MEMORY INTEGRATION] Found relevant memory context: '{memory_context[:100]}...'")
@@ -1496,9 +1594,25 @@ class RealtimeClient:
                 # Return true to indicate memory context was added
                 return True
             else:
-                print(f"\n[MEMORY INTEGRATION] No relevant memory context found for audio transcript: '{text[:50]}...'")
-                logger.info("No relevant memory context found for audio transcript")
-                return False
+                # If this is a greeting and we have a username, add a simple system message
+                if is_greeting and self.username:
+                    print(f"\n[MEMORY INTEGRATION] No memory context found, but adding username for greeting")
+                    await self.send_event({
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "message",
+                            "role": "system",
+                            "content": [{
+                                "type": "input_text",
+                                "text": f"The user's name is {self.username}. Greet them by name."
+                            }]
+                        }
+                    })
+                    return True
+                else:
+                    print(f"\n[MEMORY INTEGRATION] No relevant memory context found for audio transcript: '{text[:50]}...'")
+                    logger.info("No relevant memory context found for audio transcript")
+                    return False
         except Exception as e:
             logger.error(f"Error adding memory context for audio transcript: {e}")
             print(f"\n[MEMORY INTEGRATION] Error retrieving memory context for audio transcript: {e}")
