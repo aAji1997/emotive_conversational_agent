@@ -22,6 +22,7 @@ python-dotenv~=1.1.0
 matplotlib~=3.8.3
 requests~=2.32.3
 protobuf~=6.30.2
+scipy~=1.12.0
 
 # Image processing
 Pillow~=11.2.1
