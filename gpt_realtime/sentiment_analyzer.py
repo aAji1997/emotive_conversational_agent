@@ -726,6 +726,19 @@ class SentimentAnalysisManager:
             return False
 
         try:
+            # If this is a user audio chunk, check if we should skip it
+            if source == "user" and self.shared_emotion_scores:
+                # Skip if assistant is responding
+                if self.shared_emotion_scores.is_assistant_responding():
+                    # Skip user audio chunks while assistant is responding to prevent anomalous updates
+                    logger.debug("Skipping user audio chunk while assistant is responding")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # For silence, we'll still process the audio but log it
+                # This ensures the visualization continues to update
+                if self.shared_emotion_scores.is_silence_detected():
+                    logger.debug("Processing user audio chunk during silence period (for visualization)")
+
             audio_chunk = {
                 "source": source,
                 "data": audio_data,
@@ -759,6 +772,19 @@ class SentimentAnalysisManager:
             return False
 
         try:
+            # If this is user text, check if we should skip it
+            if source == "user" and self.shared_emotion_scores:
+                # Skip if assistant is responding
+                if self.shared_emotion_scores.is_assistant_responding():
+                    # Skip user text while assistant is responding to prevent anomalous updates
+                    logger.info("Skipping user text sentiment analysis while assistant is responding")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # For silence, we'll still process the text but log it
+                # This ensures the visualization continues to update
+                if self.shared_emotion_scores.is_silence_detected():
+                    logger.info("Processing user text during silence period (for visualization)")
+
             text_sentiment_request = {
                 "source": source,
                 "text": text,
@@ -842,15 +868,37 @@ class SentimentAnalysisManager:
                                 try:
                                     # Update the appropriate emotion scores using the SharedEmotionState
                                     if source == 'user':
-                                        # Update user emotion scores
-                                        success = self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
-                                        if success:
-                                            print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {result['emotion_scores']}")
-                                            logger.info(f"Updated user emotion scores: {result['emotion_scores']}")
+                                        # Check if the assistant is currently responding or if silence is detected
+                                        is_assistant_responding = self.shared_emotion_scores.is_assistant_responding()
+                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
+
+                                        # Skip updating user sentiment only if assistant is responding
+                                        # We'll still update during silence to ensure the visualization shows something
+                                        if is_assistant_responding:
+                                            print(f"\n[SENTIMENT ANALYSIS] Skipping user emotion update while assistant is responding")
+                                            logger.info(f"Skipped user emotion update while assistant is responding")
                                         else:
-                                            logger.error(f"Failed to update user emotion scores")
+                                            # Update user emotion scores if assistant is not responding
+                                            # Even if silence is detected, we'll still update but log it
+                                            if is_silence_detected:
+                                                logger.info(f"Updating user emotion scores during silence period (for visualization)")
+
+                                            success = self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
+                                            if success:
+                                                print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {result['emotion_scores']}")
+                                                logger.info(f"Updated user emotion scores: {result['emotion_scores']}")
+                                            else:
+                                                logger.error(f"Failed to update user emotion scores")
                                     elif source == 'model' or source == 'assistant':
-                                        # Update assistant emotion scores
+                                        # For assistant, always update regardless of silence
+                                        # This ensures the visualization continues to update
+                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
+
+                                        # Log if we're in a silence period, but still update
+                                        if is_silence_detected:
+                                            logger.info(f"Updating assistant emotion scores during silence period (for visualization)")
+
+                                        # Always update assistant emotion scores
                                         success = self.shared_emotion_scores.update_emotion_scores('assistant', result['emotion_scores'])
                                         if success:
                                             print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {result['emotion_scores']}")

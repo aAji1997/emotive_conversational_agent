@@ -147,6 +147,13 @@ class RealtimeClient:
         self.response_complete_event = asyncio.Event()
         self.response_complete_event.set()  # Initially set to True (not responding)
 
+        # Silence detection parameters
+        self.silence_threshold = 50  # Amplitude threshold for silence detection (lowered from 100)
+        self.silence_duration_threshold = 5.0  # Seconds of silence before considering it a silence period (increased from 3.0)
+        self.last_audio_activity_time = time.time()  # Track the last time audio activity was detected
+        self.silence_check_interval = 1.0  # How often to check for silence (seconds)
+        self.last_silence_check_time = time.time()  # Last time we checked for silence
+
         # Create transcript processor with username
         self.transcript_processor = TranscriptProcessor(username=self.username)
 
@@ -681,6 +688,11 @@ class RealtimeClient:
                 self.is_responding = True
                 self.response_complete_event.clear()
 
+                # Update the assistant_is_responding flag in the shared emotion state
+                if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                    self.sentiment_manager.shared_emotion_scores.set_assistant_responding(True)
+                    logger.info("Set assistant_is_responding flag to True in shared emotion state")
+
             # Append audio data to buffer
             audio_data = base64.b64decode(event.get("delta", ""))
             if audio_data:
@@ -1189,6 +1201,12 @@ class RealtimeClient:
             # Signal that the response is complete
             self.is_responding = False
             self.response_complete_event.set()
+
+            # Update the assistant_is_responding flag in the shared emotion state
+            if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                self.sentiment_manager.shared_emotion_scores.set_assistant_responding(False)
+                logger.info("Set assistant_is_responding flag to False in shared emotion state")
+
             print("\nResponse complete. You can speak again or type a command.")
 
             # Check if we're waiting to add memory context
@@ -1649,6 +1667,75 @@ class RealtimeClient:
         """Handle errors in setting assistant sentiment scores."""
         logger.error(f"Error setting assistant sentiment scores: {e}")
 
+    def _check_for_silence(self, audio_data=None):
+        """Check if there has been a period of silence.
+
+        Args:
+            audio_data (bytes, optional): Audio data to check for activity.
+
+        Returns:
+            bool: True if silence is detected, False otherwise.
+        """
+        current_time = time.time()
+
+        # If audio data is provided, check if it contains activity
+        if audio_data is not None:
+            # Convert audio data to numpy array
+            audio_array = np.frombuffer(audio_data, dtype=np.int16)
+            max_amp = np.max(np.abs(audio_array))
+
+            # If amplitude is above threshold, update the last activity time
+            if max_amp > self.silence_threshold:
+                self.last_audio_activity_time = current_time
+
+                # Also update the shared emotion state if available
+                if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                    self.sentiment_manager.shared_emotion_scores.update_audio_activity_time()
+
+                # Reset silence detection flag if it was set
+                if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                    if self.sentiment_manager.shared_emotion_scores.is_silence_detected():
+                        self.sentiment_manager.shared_emotion_scores.set_silence_detected(False)
+                        logger.info("Audio activity detected, resetting silence flag")
+
+                return False
+
+        # Only check for silence periodically to avoid excessive processing
+        if current_time - self.last_silence_check_time < self.silence_check_interval:
+            return False
+
+        # Update the last check time
+        self.last_silence_check_time = current_time
+
+        # Check if enough time has passed since the last audio activity
+        time_since_activity = current_time - self.last_audio_activity_time
+
+        # Only detect silence if we're not in the middle of a conversation
+        # This prevents false silence detection during normal conversation pauses
+        is_silence = False
+        if time_since_activity > self.silence_duration_threshold:
+            # Check if we're in the middle of a conversation
+            if self.is_responding:
+                # If the assistant is responding, don't detect silence
+                is_silence = False
+            else:
+                # If the assistant is not responding, detect silence
+                is_silence = True
+
+        # Update the shared emotion state if available
+        if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+            # Only update if the state has changed
+            current_silence_state = self.sentiment_manager.shared_emotion_scores.is_silence_detected()
+            if current_silence_state != is_silence:
+                self.sentiment_manager.shared_emotion_scores.set_silence_detected(is_silence)
+                if is_silence:
+                    logger.info(f"Silence detected after {time_since_activity:.1f} seconds of inactivity")
+                    print(f"\n[SENTIMENT ANALYSIS] Silence detected, freezing sentiment updates")
+                else:
+                    logger.info("Silence detection reset")
+
+        return is_silence
+
     async def send_chat_message(self, text):
         """Send a message using the chat completions API instead of the realtime API.
 
@@ -1901,11 +1988,14 @@ class RealtimeClient:
                             last_chunk_time = current_time
 
                         # Count silent chunks - useful for debugging
-                        if max_amp < 100:
+                        if max_amp < self.silence_threshold:
                             silent_chunks += 1
                         else:
                             silent_chunks = 0
                             last_activity_time = current_time
+
+                        # Check for silence and update the shared emotion state
+                        self._check_for_silence(chunk)
 
                         # Encode and send to the server as we go
                         base64_chunk = base64.b64encode(chunk).decode('utf-8')
@@ -2152,6 +2242,9 @@ class RealtimeClient:
                             # Use carriage return to update in place
                             print(f"\rAudio Level: {meter} {'Speaking!' if level > 3 else 'Silent'}", end="", flush=True)
                             last_level_time = current_time
+
+                        # Check for silence and update the shared emotion state
+                        self._check_for_silence(chunk)
 
                         # Add to our recorded buffer
                         recorded_data += chunk
@@ -2822,6 +2915,11 @@ class RealtimeClient:
             self.response_complete_event.set()
             self.audio_buffer = b''  # Clear any buffered audio
 
+            # Update the assistant_is_responding flag in the shared emotion state
+            if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                self.sentiment_manager.shared_emotion_scores.set_assistant_responding(False)
+                logger.info("Set assistant_is_responding flag to False in shared emotion state")
+
             # Use emergency stop to forcefully terminate all audio processes
             self.audio_handler.emergency_stop()
 
@@ -3160,7 +3258,6 @@ async def main(conversation_mode="audio", enable_memory=True):
         traceback.print_exc()
     finally:
         logger.info("Application shutting down.")
-        # No need to clean up multiprocessing manager as it's now handled by SentimentAnalysisManager
 
         logger.info("Exiting application main function.")
     # ------------------ #
