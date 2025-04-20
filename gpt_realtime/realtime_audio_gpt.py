@@ -30,6 +30,9 @@ import dash
 import dash_mantine_components as dmc
 from dash import dcc, html, Input, Output
 
+# Import the emotion wheel integration
+from gpt_realtime.emotion_wheel_integration import EmotionWheelComponent
+
 # Import memory integration
 from memory.memory_integration import MemoryIntegration
 
@@ -2843,7 +2846,10 @@ initial_user_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
 initial_assistant_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
 initial_radar_data = format_data_for_radar(initial_user_scores, initial_assistant_scores)
 
-# Define the layout
+# Create the emotion wheel component
+emotion_wheel_component = None
+
+# Define the layout - we'll update it with the emotion wheel component later
 app.layout = dmc.MantineProvider(
     theme={"colorScheme": "light"},
     withGlobalClasses=True,
@@ -2852,27 +2858,8 @@ app.layout = dmc.MantineProvider(
             dmc.Title("Real-time Emotion Analysis", order=2, ta="center"),
             dmc.Text("(User and Assistant Sentiment Comparison)", ta="center", size="sm", c="dimmed"),
             dmc.Space(h=20),
-            dmc.RadarChart(
-                id="emotion-radar-chart",
-                h=450, # Height of the chart
-                data=initial_radar_data, # Initial data
-                dataKey="emotion", # Key in data dictionaries for axis labels
-                withPolarGrid=True,
-                withPolarAngleAxis=True,
-                withPolarRadiusAxis=True,
-                polarRadiusAxisProps={"domain": [0, 3], "tickCount": 4}, # Renamed radiusAxisProps
-                series=[
-                    # Define the data series to plot with contrasting colors and transparency
-                    {"name": "User", "color": "blue.6", "opacity": 0.7},
-                    {"name": "Assistant", "color": "red.6", "opacity": 0.7}
-                ],
-            ),
-            dcc.Interval(
-                id='interval-component',
-                interval=500, # Update every 0.5 seconds (500 milliseconds) for smoother updates
-                n_intervals=0,
-                max_intervals=-1  # Run indefinitely
-            )
+            # We'll replace this with the emotion wheel component in setup_callbacks
+            html.Div(id="emotion-visualization-container"),
         ], style={"maxWidth": "600px", "margin": "auto", "padding": "20px"})
     ]
 )
@@ -2883,88 +2870,31 @@ sentiment_manager_ref = None
 # Define the callback to update the chart (needs access to shared_emotion_scores)
 # We will pass the shared dictionary to this function within main
 def setup_callbacks(shared_scores):
-    # Track the last update time to limit update frequency
-    last_update_time = [time.time()]
-    # Track the last data to avoid unnecessary updates
-    last_data = [None]
+    global emotion_wheel_component
+
+    # Create the emotion wheel component with the shared scores
+    emotion_wheel_component = EmotionWheelComponent(app, shared_scores)
 
     @app.callback(
-        Output('emotion-radar-chart', 'data'),
+        Output('emotion-visualization-container', 'children'),
         Input('interval-component', 'n_intervals')
     )
-    def update_radar_chart(_):
-        """Reads from the shared dictionary and updates the chart data for both user and assistant."""
-        # Allow more frequent updates for smoother chart animation
-        current_time = time.time()
-        if current_time - last_update_time[0] < 0.3:  # Only update once every 0.3 seconds at most
-            if last_data[0] is not None:
-                return last_data[0]
+    def update_visualization_container(_):
+        """Initialize the visualization container with the emotion wheel component."""
+        # This callback runs once to set up the visualization component
+        if emotion_wheel_component is not None:
+            return emotion_wheel_component.get_component()
+        return html.Div("Initializing visualization...")
 
-        # Update the last update time
-        last_update_time[0] = current_time
-
-        try:
-            # We no longer read from the file - we only use the shared emotion state
-
-            # First try to get scores from the global sentiment manager reference if available
-            if sentiment_manager_ref is not None and hasattr(sentiment_manager_ref, 'shared_emotion_scores'):
-                try:
-                    # Get the scores directly from the sentiment manager's SharedEmotionState
-                    user_scores, assistant_scores = sentiment_manager_ref.shared_emotion_scores.get_emotion_scores()
-
-                    # Format the data for the radar chart with both series
-                    new_radar_data = format_data_for_radar(user_scores, assistant_scores)
-
-                    # Only log updates when the data actually changes
-                    if new_radar_data != last_data[0]:
-                        print(f"\n[RADAR CHART] Updating with user and assistant sentiment data")
-                        print(f"[RADAR CHART] User scores: {user_scores}")
-                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
-                        last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
-
-                    return new_radar_data
-                except Exception as e:
-                    print(f"[RADAR CHART] Error getting scores from sentiment manager: {e}")
-                    # Fall through to try the shared_scores parameter
-
-            # Fall back to the shared_scores parameter if sentiment manager reference failed
-            if shared_scores is not None:
-                try:
-                    # If shared_scores is a SharedEmotionState instance, use its get_emotion_scores method
-                    if hasattr(shared_scores, 'get_emotion_scores'):
-                        user_scores, assistant_scores = shared_scores.get_emotion_scores()
-                    else:
-                        # Otherwise, try to read from it as a dictionary
-                        user_scores = dict(shared_scores.get('user', {}))
-                        assistant_scores = dict(shared_scores.get('assistant', {}))
-
-                    # Format the data for the radar chart with both series
-                    new_radar_data = format_data_for_radar(user_scores, assistant_scores)
-
-                    # Only log updates when the data actually changes
-                    if new_radar_data != last_data[0]:
-                        print(f"\n[RADAR CHART] Updating with user and assistant sentiment data from shared_scores")
-                        print(f"[RADAR CHART] User scores: {user_scores}")
-                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
-                        last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
-
-                    return new_radar_data
-                except Exception as e:
-                    print(f"[RADAR CHART] Error getting scores from shared_scores: {e}")
-                    # Fall through to default case
-
-            # Return empty data for both series if no scores are available or on error
-            empty_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
-            new_radar_data = format_data_for_radar(empty_scores, empty_scores)
-            last_data[0] = new_radar_data.copy()  # Make a deep copy
-            return new_radar_data
-        except Exception as e:
-            print(f"[RADAR CHART] Unexpected error in radar chart update: {e}")
-            # Return the last known good data or empty data
-            if last_data[0] is not None:
-                return last_data[0]
-            empty_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
-            return format_data_for_radar(empty_scores, empty_scores)
+    # Add a hidden interval component to trigger the initial update
+    app.layout.children[0].children.append(
+        dcc.Interval(
+            id='interval-component',
+            interval=500,  # Update every 0.5 seconds
+            n_intervals=0,
+            max_intervals=-1  # Run indefinitely
+        )
+    )
 # --- End Dash App Setup ---
 
 async def handle_user_account():

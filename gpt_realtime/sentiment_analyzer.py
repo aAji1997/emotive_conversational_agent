@@ -181,16 +181,18 @@ class SentimentAnalysisProcess(multiprocessing.Process):
             # Define the prompt for text sentiment analysis with continuous values
             prompt = """Analyze the emotional state expressed in this text based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the text, using decimal values for more nuanced assessment:
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the text, using precise decimal values for a truly continuous assessment:
 - 0.0: Emotion is completely absent.
 - 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
 - 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
 - 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Use decimal values (like 1.5, 2.3, etc.) to represent subtle gradations between intensity levels, creating a more continuous emotional space.
+IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
+
+Consider how emotions blend and overlap in natural expression. For example, Joy and Trust often appear together, as do Fear and Surprise. Your scoring should reflect these natural emotional blends.
 
 Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
-{"Joy": 0.0, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.0, "Disgust": 0.0, "Anger": 0.0, "Anticipation": 1.7}"""
+{"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model
             response = self.sentiment_client.models.generate_content(
@@ -348,16 +350,18 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             # Define the prompt for audio sentiment analysis with continuous values
             prompt = """Analyze the user's emotional state expressed in this audio based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the audio, using decimal values for more nuanced assessment:
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the audio, using precise decimal values for a truly continuous assessment:
 - 0.0: Emotion is completely absent.
 - 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
 - 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
 - 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Use decimal values (like 1.5, 2.3, etc.) to represent subtle gradations between intensity levels, creating a more continuous emotional space.
+IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
+
+Pay special attention to vocal cues like tone, pitch, pace, and volume that indicate emotional states. Consider how emotions blend and overlap in natural speech. For example, Joy and Trust often appear together in voice, as do Fear and Surprise. Your scoring should reflect these natural emotional blends in the audio.
 
 Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
-{"Joy": 0.0, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.0, "Disgust": 0.0, "Anger": 0.0, "Anticipation": 1.7}"""
+{"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model via the client's model interface
             # print("[Sentiment Analysis] Calling Gemini API for sentiment...") # Debug

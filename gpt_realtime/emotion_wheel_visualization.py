@@ -13,6 +13,7 @@ from plotly.subplots import make_subplots
 import math
 import colorsys
 import time
+from scipy.interpolate import CubicSpline
 
 # Define the 8 core emotions based on Plutchik's wheel
 CORE_EMOTIONS = [
@@ -231,6 +232,36 @@ class EmotionWheelVisualization:
                 self.target_assistant_emotions[emotion] - self.current_assistant_emotions[emotion]
             )
 
+        # Apply a small amount of smoothing between adjacent emotions for continuity
+        # This creates a more continuous emotional space by slightly blending neighboring emotions
+        smoothed_user = self.current_user_emotions.copy()
+        smoothed_assistant = self.current_assistant_emotions.copy()
+
+        # Define smoothing factor (small value to maintain the primary emotion scores)
+        smooth_factor = 0.15
+
+        # Apply smoothing for each emotion based on its neighbors
+        for i, emotion in enumerate(CORE_EMOTIONS):
+            # Get indices of adjacent emotions (circular list)
+            prev_idx = (i - 1) % len(CORE_EMOTIONS)
+            next_idx = (i + 1) % len(CORE_EMOTIONS)
+            prev_emotion = CORE_EMOTIONS[prev_idx]
+            next_emotion = CORE_EMOTIONS[next_idx]
+
+            # Apply smoothing to user emotions
+            smoothed_user[emotion] = (1 - smooth_factor) * self.current_user_emotions[emotion] + \
+                                    (smooth_factor / 2) * self.current_user_emotions[prev_emotion] + \
+                                    (smooth_factor / 2) * self.current_user_emotions[next_emotion]
+
+            # Apply smoothing to assistant emotions
+            smoothed_assistant[emotion] = (1 - smooth_factor) * self.current_assistant_emotions[emotion] + \
+                                         (smooth_factor / 2) * self.current_assistant_emotions[prev_emotion] + \
+                                         (smooth_factor / 2) * self.current_assistant_emotions[next_emotion]
+
+        # Update the current emotions with the smoothed values
+        self.current_user_emotions = smoothed_user
+        self.current_assistant_emotions = smoothed_assistant
+
     def get_updated_figure(self):
         """
         Get the updated figure with the current emotion states.
@@ -244,24 +275,13 @@ class EmotionWheelVisualization:
         # Create a new figure with the base layout
         fig = self._create_base_figure()
 
-        # Create a simpler visualization using polar coordinates directly
-        # This avoids the more complex contour plots that might be causing issues
+        # Create a smoother visualization using more points for the polygons
+        # This creates a more continuous representation of the emotional space
 
-        # Prepare data for user emotions
-        user_r = []
-        user_theta = []
-        for i, emotion in enumerate(CORE_EMOTIONS):
-            angle_deg = i * 45
-            angle_rad = angle_deg * np.pi / 180
-            score = self.current_user_emotions[emotion]
-            user_r.append(score)
-            user_theta.append(angle_deg)
+        # Generate smooth polygon points for user emotions (24 points instead of 8)
+        user_r, user_theta = self._generate_smooth_polygon(self.current_user_emotions)
 
-        # Close the loop for a complete polygon
-        user_r.append(user_r[0])
-        user_theta.append(user_theta[0])
-
-        # Add user emotion polygon
+        # Add user emotion polygon with the smooth contour
         fig.add_trace(go.Scatterpolar(
             r=user_r,
             theta=user_theta,
@@ -271,21 +291,10 @@ class EmotionWheelVisualization:
             name="User Emotions"
         ))
 
-        # Prepare data for assistant emotions
-        assistant_r = []
-        assistant_theta = []
-        for i, emotion in enumerate(CORE_EMOTIONS):
-            angle_deg = i * 45
-            angle_rad = angle_deg * np.pi / 180
-            score = self.current_assistant_emotions[emotion]
-            assistant_r.append(score)
-            assistant_theta.append(angle_deg)
+        # Generate smooth polygon points for assistant emotions
+        assistant_r, assistant_theta = self._generate_smooth_polygon(self.current_assistant_emotions)
 
-        # Close the loop for a complete polygon
-        assistant_r.append(assistant_r[0])
-        assistant_theta.append(assistant_theta[0])
-
-        # Add assistant emotion polygon
+        # Add assistant emotion polygon with the smooth contour
         fig.add_trace(go.Scatterpolar(
             r=assistant_r,
             theta=assistant_theta,
@@ -332,3 +341,55 @@ class EmotionWheelVisualization:
                 ))
 
         return fig
+
+    def _generate_smooth_polygon(self, emotion_scores, num_points=24):
+        """
+        Generate a smooth polygon with more points for continuous visualization.
+
+        Args:
+            emotion_scores (dict): Dictionary mapping emotions to scores.
+            num_points (int): Number of points to generate for the polygon.
+
+        Returns:
+            tuple: (r_values, theta_values) for the polygon points.
+        """
+        # Get the base points for the 8 core emotions
+        base_r = []
+        base_theta = []
+
+        for i, emotion in enumerate(CORE_EMOTIONS):
+            angle_deg = i * 45
+            score = emotion_scores[emotion]
+            base_r.append(score)
+            base_theta.append(angle_deg)
+
+        # Add the first point again to close the loop
+        base_r.append(base_r[0])
+        base_theta.append(base_theta[0])
+
+        # Convert to numpy arrays for interpolation
+        base_r = np.array(base_r)
+        base_theta = np.array(base_theta)
+
+        # Generate more points using cubic spline interpolation
+        # This creates a smooth curve through the core emotion points
+        t = np.linspace(0, 1, len(base_r))
+        t_interp = np.linspace(0, 1, num_points)
+
+        # Convert to Cartesian coordinates for interpolation
+        x = base_r * np.cos(np.radians(base_theta))
+        y = base_r * np.sin(np.radians(base_theta))
+
+        # Interpolate x and y separately using cubic spline
+        cs_x = CubicSpline(t, x, bc_type='periodic')
+        cs_y = CubicSpline(t, y, bc_type='periodic')
+
+        # Generate interpolated points
+        x_interp = cs_x(t_interp)
+        y_interp = cs_y(t_interp)
+
+        # Convert back to polar coordinates
+        r_interp = np.sqrt(x_interp**2 + y_interp**2)
+        theta_interp = np.degrees(np.arctan2(y_interp, x_interp)) % 360
+
+        return r_interp, theta_interp
