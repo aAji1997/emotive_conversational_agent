@@ -54,6 +54,13 @@ except ImportError:
         "Sadness", "Disgust", "Anger", "Anticipation"
     ]
 
+# Import SharedEmotionState for in-memory emotion data sharing
+try:
+    from gpt_realtime.shared_emotion_state import SharedEmotionState
+except ImportError:
+    print("WARNING: shared_emotion_state.py not found or SharedEmotionState class missing.")
+    print("In-memory emotion sharing will be disabled.")
+
 # Helper function to format data for RadarChart
 def format_data_for_radar(user_scores, assistant_scores=None):
     """Converts emotion score dictionaries to format needed for radar chart.
@@ -1615,43 +1622,25 @@ class RealtimeClient:
         return scores
 
     def _update_sentiment_file(self, emotion_scores, source):
-        """Update the sentiment scores file with new scores.
+        """Update the sentiment scores in the shared emotion state.
 
         Args:
             emotion_scores (dict): The emotion scores to update
             source (str): Either 'user' or 'assistant'
         """
         try:
-            # Create a temporary file path
-            import os
-            import json
-            temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
-
-            # Read existing scores if available
-            current_scores = {
-                'user': {emotion: 0 for emotion in CORE_EMOTIONS},
-                'assistant': {emotion: 0 for emotion in CORE_EMOTIONS}
-            }
-
-            if os.path.exists(temp_file):
-                try:
-                    with open(temp_file, 'r') as f:
-                        current_scores = json.load(f)
-                except Exception:
-                    pass
-
-            # Update the appropriate scores
-            current_scores[source] = emotion_scores
-
-            # Save to file
-            with open(temp_file, 'w') as f:
-                json.dump(current_scores, f)
-
-            print(f"[SENTIMENT ANALYSIS] Updated {source} emotion scores in file: {temp_file}")
-        except Exception as file_error:
-            print(f"[SENTIMENT ANALYSIS] Error updating {source} emotion scores in file: {file_error}")
+            # Update the shared emotion state if available
+            if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                # Use the SharedEmotionState's update_emotion_scores method
+                success = self.sentiment_manager.shared_emotion_scores.update_emotion_scores(source, emotion_scores)
+                if success:
+                    print(f"[SENTIMENT ANALYSIS] Updated {source} emotion scores in shared state")
+                else:
+                    print(f"[SENTIMENT ANALYSIS] Failed to update {source} emotion scores in shared state")
+            else:
+                print(f"[SENTIMENT ANALYSIS] Cannot update {source} emotion scores: sentiment analysis not enabled or manager not available")
+        except Exception as error:
+            print(f"[SENTIMENT ANALYSIS] Error updating {source} emotion scores in shared state: {error}")
 
     def _set_assistant_sentiment_scores_error_handler(self, e):
         """Handle errors in setting assistant sentiment scores."""
@@ -2915,53 +2904,25 @@ def setup_callbacks(shared_scores):
         last_update_time[0] = current_time
 
         try:
-            # First try to read from the file
-            try:
-                temp_file = os.path.join(os.path.dirname(__file__), 'temp', 'current_emotion_scores.json')
-                if os.path.exists(temp_file):
-                    with open(temp_file, 'r') as f:
-                        file_scores = json.load(f)
+            # We no longer read from the file - we only use the shared emotion state
 
-                    if file_scores and 'user' in file_scores and 'assistant' in file_scores:
-                        user_scores = file_scores['user']
-                        assistant_scores = file_scores['assistant']
-                        print(f"\n[RADAR CHART] Got scores from file: {temp_file}")
-                        print(f"[RADAR CHART] User scores: {user_scores}")
-                        print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
-
-                        # Format the data for the radar chart with both series
-                        new_radar_data = format_data_for_radar(user_scores, assistant_scores)
-
-                        # Only log updates when the data actually changes
-                        if new_radar_data != last_data[0]:
-                            print(f"\n[RADAR CHART] Updating with user and assistant sentiment data from file")
-                            last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
-
-                        return new_radar_data
-            except Exception as e:
-                print(f"[RADAR CHART] Error reading scores from file: {e}")
-
-            # Then try to get scores from the global sentiment manager reference if available
+            # First try to get scores from the global sentiment manager reference if available
             if sentiment_manager_ref is not None and hasattr(sentiment_manager_ref, 'shared_emotion_scores'):
                 try:
-                    # Get the scores directly from the sentiment manager
-                    manager_scores = sentiment_manager_ref.shared_emotion_scores
-                    if manager_scores and 'user' in manager_scores and 'assistant' in manager_scores:
-                        user_scores = dict(manager_scores['user'])
-                        assistant_scores = dict(manager_scores['assistant'])
-                        print(f"\n[RADAR CHART] Got scores directly from sentiment manager")
+                    # Get the scores directly from the sentiment manager's SharedEmotionState
+                    user_scores, assistant_scores = sentiment_manager_ref.shared_emotion_scores.get_emotion_scores()
+
+                    # Format the data for the radar chart with both series
+                    new_radar_data = format_data_for_radar(user_scores, assistant_scores)
+
+                    # Only log updates when the data actually changes
+                    if new_radar_data != last_data[0]:
+                        print(f"\n[RADAR CHART] Updating with user and assistant sentiment data")
                         print(f"[RADAR CHART] User scores: {user_scores}")
                         print(f"[RADAR CHART] Assistant scores: {assistant_scores}")
+                        last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
 
-                        # Format the data for the radar chart with both series
-                        new_radar_data = format_data_for_radar(user_scores, assistant_scores)
-
-                        # Only log updates when the data actually changes
-                        if new_radar_data != last_data[0]:
-                            print(f"\n[RADAR CHART] Updating with user and assistant sentiment data")
-                            last_data[0] = new_radar_data.copy()  # Make a deep copy to avoid reference issues
-
-                        return new_radar_data
+                    return new_radar_data
                 except Exception as e:
                     print(f"[RADAR CHART] Error getting scores from sentiment manager: {e}")
                     # Fall through to try the shared_scores parameter
@@ -2969,9 +2930,13 @@ def setup_callbacks(shared_scores):
             # Fall back to the shared_scores parameter if sentiment manager reference failed
             if shared_scores is not None:
                 try:
-                    # Read the current scores for both user and assistant
-                    user_scores = dict(shared_scores.get('user', {}))
-                    assistant_scores = dict(shared_scores.get('assistant', {}))
+                    # If shared_scores is a SharedEmotionState instance, use its get_emotion_scores method
+                    if hasattr(shared_scores, 'get_emotion_scores'):
+                        user_scores, assistant_scores = shared_scores.get_emotion_scores()
+                    else:
+                        # Otherwise, try to read from it as a dictionary
+                        user_scores = dict(shared_scores.get('user', {}))
+                        assistant_scores = dict(shared_scores.get('assistant', {}))
 
                     # Format the data for the radar chart with both series
                     new_radar_data = format_data_for_radar(user_scores, assistant_scores)
@@ -3109,9 +3074,13 @@ async def main(conversation_mode="audio", enable_memory=True):
         print("\nSentiment analysis is DISABLED: Gemini API key not found.")
 
     # --- Shared Data Setup ---
-    # We'll get the shared emotion scores from the SentimentAnalysisManager after it's initialized
-    # This will be a multiprocessing.Manager().dict() that can be shared between processes
-    shared_emotion_scores = None
+    # Initialize a local SharedEmotionState (will be replaced with the one from SentimentAnalysisManager if available)
+    try:
+        shared_emotion_scores = SharedEmotionState()
+        logger.info("Initialized local SharedEmotionState for emotion scores.")
+    except Exception as e:
+        logger.warning(f"Could not initialize SharedEmotionState: {e}. Using None for shared_emotion_scores.")
+        shared_emotion_scores = None
     # ---------------------------------------------
 
     # Create client, passing the shared dictionary if sentiment analysis is enabled
@@ -3132,15 +3101,15 @@ async def main(conversation_mode="audio", enable_memory=True):
 
     # Get the shared emotion scores from the client if available
     if enable_sentiment and client.sentiment_manager and client.sentiment_manager.is_initialized:
-        # Get the shared emotion scores directly from the sentiment manager
-        shared_emotion_scores = client.sentiment_manager.shared_emotion_scores
-        print(f"\n[RADAR CHART] Got shared emotion scores directly from sentiment manager: {shared_emotion_scores}")
-        logger.info("Got shared emotion scores directly from sentiment manager for Dash callbacks.")
-
         # Set the global sentiment manager reference for the Dash callback
         global sentiment_manager_ref
         sentiment_manager_ref = client.sentiment_manager
         print(f"\n[RADAR CHART] Set global sentiment manager reference: {sentiment_manager_ref}")
+
+        # Use the SharedEmotionState from the sentiment manager
+        shared_emotion_scores = client.sentiment_manager.shared_emotion_scores
+        print(f"\n[RADAR CHART] Using SharedEmotionState from sentiment manager")
+        logger.info("Using SharedEmotionState from sentiment manager for Dash callbacks.")
 
     # Setup Dash callbacks, passing the shared dictionary
     if shared_emotion_scores is not None:

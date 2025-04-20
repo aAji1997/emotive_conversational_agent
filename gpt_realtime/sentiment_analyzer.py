@@ -8,6 +8,9 @@ import tempfile
 import wave
 import os
 import logging
+
+# Import the SharedEmotionState class
+from gpt_realtime.shared_emotion_state import SharedEmotionState
 try:
     from google import genai
 except ImportError:
@@ -243,40 +246,9 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             }
             self.sentiment_history.append(result)
 
-            # Also save directly to a file for the radar chart
-            try:
-                # Create a temporary file path
-                temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
-                os.makedirs(temp_dir, exist_ok=True)
-                temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
-
-                # Read existing scores if available
-                current_scores = {
-                    'user': {emotion: 0 for emotion in CORE_EMOTIONS},
-                    'assistant': {emotion: 0 for emotion in CORE_EMOTIONS}
-                }
-
-                if os.path.exists(temp_file):
-                    try:
-                        with open(temp_file, 'r') as f:
-                            current_scores = json.load(f)
-                    except Exception:
-                        pass
-
-                # Update the appropriate scores based on the source
-                if source == "user":
-                    current_scores['user'] = emotion_scores
-                elif source == "model" or source == "assistant":
-                    current_scores['assistant'] = emotion_scores
-                    print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {emotion_scores}")
-
-                # Save to file
-                with open(temp_file, 'w') as f:
-                    json.dump(current_scores, f)
-
-                print(f"[Sentiment Analysis] Directly saved text emotion scores to file: {temp_file}")
-            except Exception as file_error:
-                print(f"[Sentiment Analysis] Error saving text emotion scores to file: {file_error}")
+            # No need to save to a file anymore - the scores will be updated in the shared state
+            # through the sentiment history list and _continuously_update_sentiment method
+            print(f"[Sentiment Analysis] Text sentiment scores will be updated in shared state")
 
             print(f"[Sentiment Analysis] Text Result Scores for {source}: {emotion_scores}")
 
@@ -456,39 +428,9 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             }
             self.sentiment_history.append(result)
 
-            # Also save directly to a file for the radar chart
-            try:
-                # Create a temporary file path
-                temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
-                os.makedirs(temp_dir, exist_ok=True)
-                temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
-
-                # Read existing scores if available
-                current_scores = {
-                    'user': {emotion: 0 for emotion in CORE_EMOTIONS},
-                    'assistant': {emotion: 0 for emotion in CORE_EMOTIONS}
-                }
-
-                if os.path.exists(temp_file):
-                    try:
-                        with open(temp_file, 'r') as f:
-                            current_scores = json.load(f)
-                    except Exception:
-                        pass
-
-                # Update the appropriate scores based on the source we determined earlier
-                if source == "user":
-                    current_scores['user'] = emotion_scores
-                elif source == "model" or source == "assistant":
-                    current_scores['assistant'] = emotion_scores
-
-                # Save to file
-                with open(temp_file, 'w') as f:
-                    json.dump(current_scores, f)
-
-                print(f"[Sentiment Analysis] Directly saved emotion scores to file: {temp_file}")
-            except Exception as file_error:
-                print(f"[Sentiment Analysis] Error saving emotion scores to file: {file_error}")
+            # No need to save to a file anymore - the scores will be updated in the shared state
+            # through the sentiment history list and _continuously_update_sentiment method
+            print(f"[Sentiment Analysis] Audio sentiment scores will be updated in shared state")
 
             print(f"[Sentiment Analysis] Result Scores: {emotion_scores} for {actual_duration_s:.1f}s audio segment.") # Debug
 
@@ -591,11 +533,13 @@ class SentimentAnalysisManager:
                 self.audio_queue = self.manager.Queue(maxsize=500)  # Queue for audio chunks
                 self.sentiment_history_list = self.manager.list()  # Shared list for results
 
-                # Initialize separate dictionaries for user and assistant sentiment scores
-                self.shared_emotion_scores = self.manager.dict({
+                # Initialize the shared emotion state with a multiprocessing shared dictionary
+                shared_dict = self.manager.dict({
                     'user': {emotion: 0 for emotion in CORE_EMOTIONS},
-                    'assistant': {emotion: 0 for emotion in CORE_EMOTIONS}
+                    'assistant': {emotion: 0 for emotion in CORE_EMOTIONS},
+                    'last_update_time': time.time()
                 })
+                self.shared_emotion_scores = SharedEmotionState(shared_dict)
 
                 logger.info(f"Sentiment analysis components initialized for model {self.sentiment_model_name}.")
                 return True
@@ -840,17 +784,14 @@ class SentimentAnalysisManager:
             return None
 
         try:
-            # Create a deep copy of the shared dictionary to avoid any potential issues
-            result = {}
-            if 'user' in self.shared_emotion_scores:
-                result['user'] = dict(self.shared_emotion_scores['user'])
-            else:
-                result['user'] = {emotion: 0 for emotion in CORE_EMOTIONS}
+            # Use the SharedEmotionState's get_emotion_scores method
+            user_scores, assistant_scores = self.shared_emotion_scores.get_emotion_scores()
 
-            if 'assistant' in self.shared_emotion_scores:
-                result['assistant'] = dict(self.shared_emotion_scores['assistant'])
-            else:
-                result['assistant'] = {emotion: 0 for emotion in CORE_EMOTIONS}
+            # Create a dictionary with both user and assistant scores
+            result = {
+                'user': user_scores,
+                'assistant': assistant_scores
+            }
 
             # Print the scores for debugging
             print(f"\n[SENTIMENT ANALYSIS] Current emotion scores: {result}")
@@ -895,75 +836,23 @@ class SentimentAnalysisManager:
                                 source = result.get('source', 'user')  # Default to user if source not specified
 
                                 try:
-                                    # Update the appropriate dictionary based on source
+                                    # Update the appropriate emotion scores using the SharedEmotionState
                                     if source == 'user':
-                                        # IMPORTANT: For multiprocessing shared dictionaries, we need to replace the entire dictionary
-                                        # Create a completely new dictionary with all emotion scores
-                                        new_user_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
-                                        # Update with existing scores first
-                                        if 'user' in self.shared_emotion_scores:
-                                            new_user_scores.update(dict(self.shared_emotion_scores['user']))
-                                        # Then update with new scores
-                                        new_user_scores.update(result['emotion_scores'])
-                                        # Replace the entire dictionary in the shared dictionary
-                                        self.shared_emotion_scores['user'] = new_user_scores
-                                        print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {new_user_scores}")
-                                        logger.info(f"Updated user emotion scores: {new_user_scores}")
-
-                                        # Also save to a file for direct access by the radar chart
-                                        try:
-                                            # Create a temporary file path
-                                            temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
-                                            os.makedirs(temp_dir, exist_ok=True)
-                                            temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
-
-                                            # Get the current scores
-                                            current_scores = {
-                                                'user': dict(self.shared_emotion_scores['user']),
-                                                'assistant': dict(self.shared_emotion_scores['assistant'])
-                                            }
-
-                                            # Save to file
-                                            with open(temp_file, 'w') as f:
-                                                json.dump(current_scores, f)
-
-                                            print(f"[SENTIMENT ANALYSIS] Saved current emotion scores to file: {temp_file}")
-                                        except Exception as file_error:
-                                            logger.error(f"Error saving emotion scores to file: {file_error}")
+                                        # Update user emotion scores
+                                        success = self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
+                                        if success:
+                                            print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {result['emotion_scores']}")
+                                            logger.info(f"Updated user emotion scores: {result['emotion_scores']}")
+                                        else:
+                                            logger.error(f"Failed to update user emotion scores")
                                     elif source == 'model' or source == 'assistant':
-                                        # IMPORTANT: For multiprocessing shared dictionaries, we need to replace the entire dictionary
-                                        # Create a completely new dictionary with all emotion scores
-                                        new_assistant_scores = {emotion: 0 for emotion in CORE_EMOTIONS}
-                                        # Update with existing scores first
-                                        if 'assistant' in self.shared_emotion_scores:
-                                            new_assistant_scores.update(dict(self.shared_emotion_scores['assistant']))
-                                        # Then update with new scores
-                                        new_assistant_scores.update(result['emotion_scores'])
-                                        # Replace the entire dictionary in the shared dictionary
-                                        self.shared_emotion_scores['assistant'] = new_assistant_scores
-                                        print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {new_assistant_scores}")
-                                        logger.info(f"Updated assistant emotion scores: {new_assistant_scores}")
-
-                                        # Also save to a file for direct access by the radar chart
-                                        try:
-                                            # Create a temporary file path
-                                            temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
-                                            os.makedirs(temp_dir, exist_ok=True)
-                                            temp_file = os.path.join(temp_dir, 'current_emotion_scores.json')
-
-                                            # Get the current scores
-                                            current_scores = {
-                                                'user': dict(self.shared_emotion_scores['user']),
-                                                'assistant': dict(self.shared_emotion_scores['assistant'])
-                                            }
-
-                                            # Save to file
-                                            with open(temp_file, 'w') as f:
-                                                json.dump(current_scores, f)
-
-                                            print(f"[SENTIMENT ANALYSIS] Saved current emotion scores to file: {temp_file}")
-                                        except Exception as file_error:
-                                            logger.error(f"Error saving emotion scores to file: {file_error}")
+                                        # Update assistant emotion scores
+                                        success = self.shared_emotion_scores.update_emotion_scores('assistant', result['emotion_scores'])
+                                        if success:
+                                            print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {result['emotion_scores']}")
+                                            logger.info(f"Updated assistant emotion scores: {result['emotion_scores']}")
+                                        else:
+                                            logger.error(f"Failed to update assistant emotion scores")
                                 except Exception as update_error:
                                     logger.error(f"Error updating emotion scores: {update_error}")
                         except Exception as result_error:
