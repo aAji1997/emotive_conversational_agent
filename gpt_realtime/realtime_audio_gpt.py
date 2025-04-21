@@ -122,10 +122,10 @@ logger = logging.getLogger(__name__)
 
 class RealtimeClient:
     """Client for interacting with the OpenAI Realtime API via WebSocket."""
-    def __init__(self, api_key, google_api_key=None, voice="alloy", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio", enable_memory=True, user_id=None, username=None):
+    def __init__(self, api_key, google_api_key=None, voice="shimmer", enable_sentiment_analysis=False, shared_emotion_scores=None, conversation_mode="audio", enable_memory=True, user_id=None, username=None):
         # WebSocket Configuration
         self.url = "wss://api.openai.com/v1/realtime"
-        self.model = "gpt-4o-mini-realtime-preview-2024-12-17"
+        self.model = "gpt-4o-realtime-preview-2024-12-17" # Realtime model
         self.chat_model = "gpt-4o"  # Model for chat completions
         self.api_key = api_key # OpenAI API Key
         self.google_api_key = google_api_key
@@ -148,10 +148,10 @@ class RealtimeClient:
         self.response_complete_event.set()  # Initially set to True (not responding)
 
         # Silence detection parameters
-        self.silence_threshold = 50  # Amplitude threshold for silence detection (lowered from 100)
-        self.silence_duration_threshold = 5.0  # Seconds of silence before considering it a silence period (increased from 3.0)
+        self.silence_threshold = 100  # Amplitude threshold for silence detection (increased from 50 to be less sensitive)
+        self.silence_duration_threshold = 8.0  # Seconds of silence before considering it a silence period (increased from 5.0)
         self.last_audio_activity_time = time.time()  # Track the last time audio activity was detected
-        self.silence_check_interval = 1.0  # How often to check for silence (seconds)
+        self.silence_check_interval = 2.0  # How often to check for silence (seconds) - increased from 1.0
         self.last_silence_check_time = time.time()  # Last time we checked for silence
 
         # Create transcript processor with username
@@ -1800,6 +1800,9 @@ class RealtimeClient:
 
             # If amplitude is above threshold, update the last activity time
             if max_amp > self.silence_threshold:
+                # Log the amplitude for debugging
+                logger.debug(f"Audio activity detected with amplitude: {max_amp} (threshold: {self.silence_threshold})")
+
                 self.last_audio_activity_time = current_time
 
                 # Also update the shared emotion state if available
@@ -1811,6 +1814,7 @@ class RealtimeClient:
                     if self.sentiment_manager.shared_emotion_scores.is_silence_detected():
                         self.sentiment_manager.shared_emotion_scores.set_silence_detected(False)
                         logger.info("Audio activity detected, resetting silence flag")
+                        print(f"\n[SENTIMENT ANALYSIS] Audio activity detected, resuming sentiment updates")
 
                 return False
 
@@ -1824,6 +1828,10 @@ class RealtimeClient:
         # Check if enough time has passed since the last audio activity
         time_since_activity = current_time - self.last_audio_activity_time
 
+        # Log the time since last activity for debugging
+        if time_since_activity > 3.0:  # Only log if it's been more than 3 seconds
+            logger.debug(f"Time since last audio activity: {time_since_activity:.1f}s (threshold: {self.silence_duration_threshold:.1f}s)")
+
         # Only detect silence if we're not in the middle of a conversation
         # This prevents false silence detection during normal conversation pauses
         is_silence = False
@@ -1832,9 +1840,11 @@ class RealtimeClient:
             if self.is_responding:
                 # If the assistant is responding, don't detect silence
                 is_silence = False
+                logger.debug(f"Silence threshold exceeded ({time_since_activity:.1f}s) but assistant is responding, not detecting silence")
             else:
                 # If the assistant is not responding, detect silence
                 is_silence = True
+                logger.debug(f"Silence threshold exceeded ({time_since_activity:.1f}s) and assistant is not responding, detecting silence")
 
         # Update the shared emotion state if available
         if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
