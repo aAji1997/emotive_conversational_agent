@@ -45,7 +45,8 @@ class SharedEmotionState:
             'last_update_time': time.time(),
             'assistant_is_responding': False,  # Flag to track if assistant is responding
             'silence_detected': False,  # Flag to track if silence is detected
-            'last_audio_activity_time': time.time()  # Track the last time audio activity was detected
+            'last_audio_activity_time': time.time(),  # Track the last time audio activity was detected
+            'vad_speech_detected': False  # Flag to track if VAD has detected speech
         }
 
         # Initialize the shared dictionary if it doesn't have the expected structure
@@ -62,6 +63,8 @@ class SharedEmotionState:
                 self.shared_dict['silence_detected'] = False
             if 'last_audio_activity_time' not in self.shared_dict:
                 self.shared_dict['last_audio_activity_time'] = time.time()
+            if 'vad_speech_detected' not in self.shared_dict:
+                self.shared_dict['vad_speech_detected'] = False
 
     def update_emotion_scores(self, source: str, emotion_scores: Dict[str, float]) -> bool:
         """
@@ -229,3 +232,31 @@ class SharedEmotionState:
         with self.lock:
             last_time = self.shared_dict.get('last_audio_activity_time', time.time())
             return time.time() - last_time
+
+    def set_vad_speech_detected(self, speech_detected: bool) -> bool:
+        """
+        Set the flag indicating whether VAD has detected speech.
+
+        Args:
+            speech_detected: True if speech is detected, False otherwise.
+
+        Returns:
+            bool: True if the update was successful, False otherwise.
+        """
+        try:
+            with self.lock:
+                self.shared_dict['vad_speech_detected'] = bool(speech_detected)
+                return True
+        except Exception as e:
+            logger.error(f"Error setting vad_speech_detected flag: {e}")
+            return False
+
+    def is_vad_speech_detected(self) -> bool:
+        """
+        Check if VAD has detected speech.
+
+        Returns:
+            bool: True if speech is detected, False otherwise.
+        """
+        with self.lock:
+            return bool(self.shared_dict.get('vad_speech_detected', False))

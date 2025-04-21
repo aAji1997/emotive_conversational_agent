@@ -1303,12 +1303,24 @@ class RealtimeClient:
             if self.is_responding and self.VAD_config.get("interrupt_response", False):
                 self.reset_audio_state()
 
+            # Update the VAD speech detection flag in the shared emotion state
+            if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                self.sentiment_manager.shared_emotion_scores.set_vad_speech_detected(True)
+                logger.info("Set vad_speech_detected flag to True in shared emotion state")
+                print(f"\n[SENTIMENT ANALYSIS] VAD speech detected, enabling sentiment updates")
+
             # Add to transcript
             self.transcript_processor.add_speech_event("speech_started")
 
         elif event_type == "input_audio_buffer.speech_stopped":
             # logger.info("Speech stopped detected by server VAD")
             print("\nSpeech ended, processing ...")
+            # Update the VAD speech detection flag in the shared emotion state
+            if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
+                self.sentiment_manager.shared_emotion_scores.set_vad_speech_detected(False)
+                logger.info("Set vad_speech_detected flag to False in shared emotion state")
+                print(f"\n[SENTIMENT ANALYSIS] VAD speech ended, disabling sentiment updates")
+
             # Add to transcript
             self.transcript_processor.add_speech_event("speech_stopped")
 
@@ -1809,6 +1821,11 @@ class RealtimeClient:
                 if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
                     self.sentiment_manager.shared_emotion_scores.update_audio_activity_time()
 
+                    # Set VAD speech detection flag to true when audio activity is detected
+                    # This is a backup mechanism in case the server VAD events don't fire
+                    self.sentiment_manager.shared_emotion_scores.set_vad_speech_detected(True)
+                    logger.debug("Audio activity detected, setting VAD speech detection flag")
+
                 # Reset silence detection flag if it was set
                 if self.enable_sentiment_analysis and self.sentiment_manager and self.sentiment_manager.shared_emotion_scores:
                     if self.sentiment_manager.shared_emotion_scores.is_silence_detected():
@@ -1853,6 +1870,9 @@ class RealtimeClient:
             if current_silence_state != is_silence:
                 self.sentiment_manager.shared_emotion_scores.set_silence_detected(is_silence)
                 if is_silence:
+                    # Also set VAD speech detection flag to false when silence is detected
+                    # This is a backup mechanism in case the server VAD events don't fire
+                    self.sentiment_manager.shared_emotion_scores.set_vad_speech_detected(False)
                     logger.info(f"Silence detected after {time_since_activity:.1f} seconds of inactivity")
                     print(f"\n[SENTIMENT ANALYSIS] Silence detected, freezing sentiment updates")
                 else:

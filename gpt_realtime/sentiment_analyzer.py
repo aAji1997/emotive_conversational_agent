@@ -734,6 +734,12 @@ class SentimentAnalysisManager:
                     logger.debug("Skipping user audio chunk while assistant is responding")
                     return True  # Return True to indicate success (we're intentionally skipping)
 
+                # Skip if VAD has not detected speech
+                if not self.shared_emotion_scores.is_vad_speech_detected():
+                    # Skip user audio chunks when VAD has not detected speech to prevent spurious updates
+                    logger.debug("Skipping user audio chunk when VAD has not detected speech")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
                 # For silence, we'll still process the audio but log it
                 # This ensures the visualization continues to update
                 if self.shared_emotion_scores.is_silence_detected():
@@ -778,6 +784,12 @@ class SentimentAnalysisManager:
                 if self.shared_emotion_scores.is_assistant_responding():
                     # Skip user text while assistant is responding to prevent anomalous updates
                     logger.info("Skipping user text sentiment analysis while assistant is responding")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # Skip if VAD has not detected speech
+                if not self.shared_emotion_scores.is_vad_speech_detected():
+                    # Skip user text when VAD has not detected speech to prevent spurious updates
+                    logger.info("Skipping user text sentiment analysis when VAD has not detected speech")
                     return True  # Return True to indicate success (we're intentionally skipping)
 
                 # For silence, we'll still process the text but log it
