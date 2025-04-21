@@ -41,32 +41,41 @@ class MemoryIntegration:
         # Initialize session service
         self.session_service = InMemorySessionService()
 
-        # Initialize models
+        # Initialize models with cost-effective GPT-4o-mini
         self.storage_model = LiteLlm(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             api_key=openai_api_key,
             temperature=0.2,  # Lower temperature for more consistent memory storage
             max_tokens=1024   # Limit token usage for efficiency
         )
 
         self.retrieval_model = LiteLlm(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             api_key=openai_api_key,
             temperature=0.3,  # Slightly higher temperature for retrieval
             max_tokens=1024   # Limit token usage for efficiency
         )
 
-        self.orchestrator_model = LiteLlm(
-            model="gpt-4o",
-            api_key=openai_api_key,
-            temperature=0.1,  # Very low temperature for consistent orchestration decisions
-            max_tokens=2048   # Allow more tokens for orchestration
-        )
+        # Use Gemini 2.0 Flash directly for the orchestrator model
+        if gemini_api_key:
+            # Set the API key in the environment for direct model usage
+            import os
+            os.environ["GOOGLE_API_KEY"] = gemini_api_key
+            os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+            # Use the direct model name for Gemini in ADK
+            self.orchestrator_model = "gemini-2.0-flash"  # Direct model name for Gemini in ADK
+        else:
+            # Fall back to GPT-4o-mini if Gemini key is not available
+            self.orchestrator_model = LiteLlm(
+                model="gpt-4o-mini",
+                api_key=openai_api_key,
+                temperature=0.1
+            )
 
         # Initialize the memory agent
         self.memory_agent = self._create_memory_agent()
 
-        logger.info("Memory integration initialized")
+        logger.info("Memory integration initialized with GPT-4o-mini for storage/retrieval and Gemini 2.0 Flash for orchestration")
 
     def _create_memory_agent(self) -> ConversationMemoryAgent:
         """Create a memory agent with the configured models.

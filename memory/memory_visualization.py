@@ -44,26 +44,26 @@ class MemoryVisualizationDashboard:
     """
     A Dash-based dashboard for visualizing memory component interactions.
     """
-    
+
     def __init__(self, trace_data_path: Optional[str] = None):
         """
         Initialize the memory visualization dashboard.
-        
+
         Args:
             trace_data_path: Optional path to a JSON file containing trace data
         """
         self.app = dash.Dash(__name__, title="Memory Component Visualization")
         self.trace_data_path = trace_data_path
         self.trace_data = self._load_trace_data()
-        
+
         # Initialize the dashboard layout
         self._setup_layout()
-        
+
         # Set up callbacks
         self._setup_callbacks()
-        
+
         logger.info("Memory visualization dashboard initialized")
-    
+
     def _load_trace_data(self) -> List[Dict[str, Any]]:
         """Load trace data from a file or Weave."""
         if self.trace_data_path and os.path.exists(self.trace_data_path):
@@ -72,10 +72,10 @@ class MemoryVisualizationDashboard:
                     return json.load(f)
             except Exception as e:
                 logger.error(f"Error loading trace data from {self.trace_data_path}: {e}")
-        
+
         # If no file or error loading, return empty list
         return []
-    
+
     def _setup_layout(self):
         """Set up the dashboard layout."""
         self.app.layout = dmc.MantineProvider(
@@ -83,8 +83,8 @@ class MemoryVisualizationDashboard:
             withGlobalClasses=True,
             children=[
                 dmc.Container([
-                    dmc.Title("Memory Component Interaction Visualization", order=1, align="center", mb=20),
-                    
+                    dmc.Title("Memory Component Interaction Visualization", order=1, mb=20, style={"textAlign": "center"}),
+
                     # Controls section
                     dmc.Paper([
                         dmc.Group([
@@ -110,9 +110,9 @@ class MemoryVisualizationDashboard:
                                 label="Auto Refresh",
                                 checked=False
                             )
-                        ], position="apart"),
+                        ], justify="space-between"),
                     ], p=15, mb=20),
-                    
+
                     # Main visualization area
                     dmc.Paper([
                         dcc.Loading(
@@ -123,13 +123,13 @@ class MemoryVisualizationDashboard:
                             ]
                         )
                     ], p=15, mb=20),
-                    
+
                     # Trace details section
                     dmc.Paper([
                         dmc.Title("Trace Details", order=3, mb=10),
                         html.Div(id="trace-details", style={"maxHeight": "200px", "overflow": "auto"})
                     ], p=15),
-                    
+
                     # Hidden components for state management
                     dcc.Store(id="trace-data-store"),
                     dcc.Interval(
@@ -140,10 +140,10 @@ class MemoryVisualizationDashboard:
                 ], fluid=True, py=20)
             ]
         )
-    
+
     def _setup_callbacks(self):
         """Set up the dashboard callbacks."""
-        
+
         # Callback to toggle auto-refresh
         @self.app.callback(
             Output("auto-refresh-interval", "disabled"),
@@ -151,7 +151,7 @@ class MemoryVisualizationDashboard:
         )
         def toggle_auto_refresh(checked):
             return not checked
-        
+
         # Callback to refresh data
         @self.app.callback(
             Output("trace-data-store", "data"),
@@ -168,10 +168,10 @@ class MemoryVisualizationDashboard:
                     return traces
                 except Exception as e:
                     logger.error(f"Error getting traces from Weave: {e}")
-            
+
             # Fall back to file data if available
             return self._load_trace_data()
-        
+
         # Callback to update visualization
         @self.app.callback(
             Output("visualization-container", "children"),
@@ -180,9 +180,9 @@ class MemoryVisualizationDashboard:
         )
         def update_visualization(trace_data, viz_type):
             if not trace_data:
-                return html.Div("No trace data available. Click 'Refresh Data' to load data.", 
+                return html.Div("No trace data available. Click 'Refresh Data' to load data.",
                                style={"textAlign": "center", "marginTop": "50px"})
-            
+
             if viz_type == "component-flow":
                 return self._create_component_flow_viz(trace_data)
             elif viz_type == "timeline":
@@ -191,7 +191,7 @@ class MemoryVisualizationDashboard:
                 return self._create_interaction_graph_viz(trace_data)
             else:
                 return html.Div(f"Unknown visualization type: {viz_type}")
-        
+
         # Callback to update trace details
         @self.app.callback(
             Output("trace-details", "children"),
@@ -200,65 +200,65 @@ class MemoryVisualizationDashboard:
         def update_trace_details(trace_data):
             if not trace_data:
                 return "No trace data available"
-            
+
             # Create a summary of the trace data
             return html.Pre(
                 json.dumps(trace_data, indent=2),
                 style={"whiteSpace": "pre-wrap", "fontSize": "12px"}
             )
-    
+
     def _create_component_flow_viz(self, trace_data):
         """Create a component flow visualization."""
         # This is a placeholder for the actual implementation
         # In a real implementation, this would create a Sankey diagram or similar
-        
+
         # For now, just return a message
         return html.Div([
             html.H3("Component Flow Visualization"),
             html.P("This would show a Sankey diagram of component interactions."),
             html.Pre(json.dumps(trace_data[:3], indent=2))
         ])
-    
+
     def _create_timeline_viz(self, trace_data):
         """Create a timeline visualization."""
         # This is a placeholder for the actual implementation
         # In a real implementation, this would create a timeline chart
-        
+
         # For now, just return a message
         return html.Div([
             html.H3("Timeline Visualization"),
             html.P("This would show a timeline of component interactions."),
             html.Pre(json.dumps(trace_data[:3], indent=2))
         ])
-    
+
     def _create_interaction_graph_viz(self, trace_data):
         """Create an interaction graph visualization."""
         # This is a placeholder for the actual implementation
         # In a real implementation, this would create a network graph
-        
+
         # For now, just return a message
         return html.Div([
             html.H3("Interaction Graph Visualization"),
             html.P("This would show a network graph of component interactions."),
             html.Pre(json.dumps(trace_data[:3], indent=2))
         ])
-    
+
     def run_server(self, debug=True, port=8050):
         """Run the dashboard server."""
         logger.info(f"Starting memory visualization dashboard on port {port}")
-        self.app.run_server(debug=debug, port=port)
+        self.app.run(debug=debug, port=port, host='localhost')
 
 def main():
     """Main entry point for the dashboard."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Memory Component Visualization Dashboard")
     parser.add_argument("--trace-data", type=str, help="Path to trace data JSON file")
     parser.add_argument("--port", type=int, default=8050, help="Port to run the dashboard on")
     parser.add_argument("--debug", action="store_true", help="Run in debug mode")
-    
+
     args = parser.parse_args()
-    
+
     dashboard = MemoryVisualizationDashboard(trace_data_path=args.trace_data)
     dashboard.run_server(debug=args.debug, port=args.port)
 

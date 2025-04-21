@@ -77,24 +77,34 @@ async def test_memory_agent_storage():
 
     logger.info(f"Testing with user ID: {test_user_id}")
 
-    # Initialize models
+    # Initialize models with cost-effective GPT-4o-mini
     storage_model = LiteLlm(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         api_key=openai_api_key,
         temperature=0.2
     )
 
     retrieval_model = LiteLlm(
-        model="gpt-4o",
+        model="gpt-4o-mini",
         api_key=openai_api_key,
         temperature=0.3
     )
 
-    orchestrator_model = LiteLlm(
-        model="gpt-4o",
-        api_key=openai_api_key,
-        temperature=0.1
-    )
+    # Use Gemini 2.0 Flash directly for the orchestrator model
+    if gemini_api_key:
+        # Set the API key in the environment for direct model usage
+        import os
+        os.environ["GOOGLE_API_KEY"] = gemini_api_key
+        os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+        # Use the direct model name for Gemini in ADK
+        orchestrator_model = "gemini-2.0-flash"  # Direct model name for Gemini in ADK
+    else:
+        # Fall back to GPT-4o-mini if Gemini key is not available
+        orchestrator_model = LiteLlm(
+            model="gpt-4o-mini",
+            api_key=openai_api_key,
+            temperature=0.1
+        )
 
     # Initialize session service
     session_service = InMemorySessionService()

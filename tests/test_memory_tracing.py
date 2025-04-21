@@ -42,24 +42,36 @@ async def test_traced_memory_agent():
             logger.error("OpenAI API key not found in .api_key.json")
             return False
 
-        # Initialize models
+        # Initialize models with cost-effective GPT-4o-mini
         storage_model = LiteLlm(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             api_key=openai_api_key,
             temperature=0.2
         )
 
         retrieval_model = LiteLlm(
-            model="gpt-4o",
+            model="gpt-4o-mini",
             api_key=openai_api_key,
             temperature=0.3
         )
 
-        orchestrator_model = LiteLlm(
-            model="gpt-4o",
-            api_key=openai_api_key,
-            temperature=0.1
-        )
+        # Try to load Gemini API key for the orchestrator
+        gemini_api_key = api_keys.get('gemini_api_key')
+        if gemini_api_key:
+            # Use Gemini 2.0 Flash directly for the orchestrator model
+            # Set the API key in the environment for direct model usage
+            import os
+            os.environ["GOOGLE_API_KEY"] = gemini_api_key
+            os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+            # Use the direct model name for Gemini in ADK
+            orchestrator_model = "gemini-2.0-flash"  # Direct model name for Gemini in ADK
+        else:
+            # Fall back to GPT-4o-mini if Gemini key is not available
+            orchestrator_model = LiteLlm(
+                model="gpt-4o-mini",
+                api_key=openai_api_key,
+                temperature=0.1
+            )
 
         # Initialize session service
         session_service = InMemorySessionService()
@@ -116,11 +128,11 @@ async def run_visualization_dashboard():
     """Run the memory visualization dashboard."""
     try:
         from memory.memory_visualization import MemoryVisualizationDashboard
-        
+
         # Create and run the dashboard
         dashboard = MemoryVisualizationDashboard()
         dashboard.run_server(debug=True, port=8050)
-        
+
         return True
     except Exception as e:
         logger.error(f"Error running visualization dashboard: {e}")
@@ -132,10 +144,10 @@ async def main():
     """Main entry point for the test script."""
     # Test the traced memory agent
     success = await test_traced_memory_agent()
-    
+
     if success:
         logger.info("Traced memory agent test completed successfully")
-        
+
         # Run the visualization dashboard
         logger.info("Starting visualization dashboard...")
         await run_visualization_dashboard()

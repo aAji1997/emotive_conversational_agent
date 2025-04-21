@@ -540,9 +540,10 @@ class ConversationMemoryAgent:
         # Create FunctionTool for invoke_agent
         self.invoke_agent_tool = FunctionTool(func=invoke_agent_func)
 
+        # Check if orchestrator_agent_model is a string (direct model name) or an object (LiteLlm instance)
         self.orchestrator_agent = Agent(
             name="memory_orchestrator",
-            model=orchestrator_agent_model,
+            model=orchestrator_agent_model,  # Can be either a direct model name (string) or a LiteLlm instance
             instruction="""You are a memory orchestrator. You coordinate the storage and retrieval of memories during conversations.
 
             Your responsibilities include:
