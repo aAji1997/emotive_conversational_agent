@@ -691,50 +691,55 @@ class ConversationMemoryAgent:
             voice_patterns = ['know where', 'remember where', 'know my location', 'know my address', 'you know where']
             is_voice_location_query = any(pattern in current_message.lower() for pattern in voice_patterns)
 
-            # If it's a location query, voice location query, or we're forcing retrieval, try multiple queries
+            # If it's a location query, voice location query, or we're forcing retrieval, use optimized approach
             if is_location_query or is_voice_location_query or force_retrieval:
-                print(f"\n[DEBUG] Detected location-related query or forced retrieval, using multiple queries")
+                print(f"\n[DEBUG] Detected location-related query or forced retrieval, using optimized approach")
                 print(f"  Is location query: {is_location_query}")
                 print(f"  Is voice location query: {is_voice_location_query}")
                 print(f"  Force retrieval: {force_retrieval}")
 
-                # Try multiple location-related queries
-                location_queries = [
-                    "user moved from Sacramento to Seattle",
-                    "user's location",
-                    "where user lives",
-                    "user's city",
-                    "user's residence",
-                    "user's address",
-                    "Seattle",  # Add specific city names
-                    "Sacramento",
-                    "user in Seattle"
-                ]
+                # Create a single optimized composite query for location information
+                # This combines multiple location-related concepts into one query
+                composite_location_query = "user location where they live city address residence Seattle Sacramento"
+                print(f"\n[DEBUG] Using optimized composite location query: {composite_location_query}")
 
-                # Try each query and collect all unique memories
+                # Create a single embedding for the composite query
+                composite_embedding = self.db_connector.create_embedding(composite_location_query)
+
+                # Retrieve memories with a higher limit to ensure we get comprehensive results
+                # but with just one database call instead of multiple calls
+                location_memories = self.db_connector.retrieve_memories(composite_embedding, limit=5, user_id=self.user_id)
+
+                # Also use the original message embedding as a backup to ensure relevance
+                message_memories = self.db_connector.retrieve_memories(message_embedding, limit=3, user_id=self.user_id)
+
+                # Combine results while removing duplicates
                 all_memories = []
                 memory_ids = set()  # Track memory IDs to avoid duplicates
 
-                for query in location_queries:
-                    print(f"\n[DEBUG] Trying location query: {query}")
-                    query_embedding = self.db_connector.create_embedding(query)
-                    query_memories = self.db_connector.retrieve_memories(query_embedding, limit=3, user_id=self.user_id)
+                # First add location-specific memories
+                for memory in location_memories:
+                    memory_id = memory.get('id')
+                    if memory_id and memory_id not in memory_ids:
+                        memory_ids.add(memory_id)
+                        all_memories.append(memory)
+                        print(f"  Found location memory: {memory.get('content', 'No content')}")
 
-                    # Add unique memories to the result list
-                    for memory in query_memories:
-                        memory_id = memory.get('id')
-                        if memory_id and memory_id not in memory_ids:
-                            memory_ids.add(memory_id)
-                            all_memories.append(memory)
-                            print(f"  Found memory: {memory.get('content', 'No content')}")
+                # Then add message-specific memories if not already included
+                for memory in message_memories:
+                    memory_id = memory.get('id')
+                    if memory_id and memory_id not in memory_ids:
+                        memory_ids.add(memory_id)
+                        all_memories.append(memory)
+                        print(f"  Found message memory: {memory.get('content', 'No content')}")
 
-                # If we found any memories with the specialized queries, use those
+                # If we found any memories, use those
                 if all_memories:
-                    print(f"\n[DEBUG] Found {len(all_memories)} unique memories with specialized queries")
+                    print(f"\n[DEBUG] Found {len(all_memories)} unique memories with optimized approach")
                     relevant_memories = all_memories
                 else:
                     # Fall back to regular search
-                    print(f"\n[DEBUG] No memories found with specialized queries, using regular search")
+                    print(f"\n[DEBUG] No memories found with optimized approach, using regular search")
                     relevant_memories = self.db_connector.retrieve_memories(message_embedding, limit=3, user_id=self.user_id)
             else:
                 # Regular search for non-location queries

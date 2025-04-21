@@ -140,22 +140,22 @@ class MemoryIntegration:
 
         print(f"\n[MEMORY AGENT] Finished processing assistant message in {conversation_mode} mode")
 
-    async def get_context_with_memories(self, current_message: str, force_retrieval: bool = False) -> str:
-        """Get relevant memories for the current message and format them for context.
+    async def _centralized_memory_retrieval(self, current_message: str, force_retrieval: bool = False) -> List[Dict[str, Any]]:
+        """Centralized function for retrieving memories to avoid redundant calls.
 
         Args:
             current_message: The current message to find relevant memories for
             force_retrieval: If True, prioritize memory retrieval
 
         Returns:
-            Formatted string of memories for inclusion in the prompt
+            List of relevant memory dictionaries
         """
         try:
             # Check if the message contains phrases indicating memory retrieval intent
             if not force_retrieval:
                 force_retrieval = self._detect_memory_retrieval_intent(current_message)
                 if force_retrieval:
-                    logger.info("Detected memory retrieval intent in message for context")
+                    logger.info("Detected memory retrieval intent in message")
                     print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent in message: '{current_message[:50]}...'")
 
             # For location-related queries, always force retrieval
@@ -172,12 +172,9 @@ class MemoryIntegration:
             session.state["current_message"] = current_message
             session.state["force_memory_retrieval"] = force_retrieval
 
-            # Get relevant memories using the memory agent
+            # Get relevant memories using the memory agent with optimized retrieval
             print(f"\n[MEMORY INTEGRATION] Getting relevant memories for: '{current_message[:50]}...'")
             relevant_memories = await self.memory_agent.get_relevant_memories(current_message, force_retrieval)
-
-            # Format memories for context, indicating if retrieval was explicitly attempted
-            memory_context = self.memory_agent.format_memories_for_context(relevant_memories, retrieval_attempted=force_retrieval)
 
             logger.info(f"Retrieved {len(relevant_memories)} memories for context")
 
@@ -186,10 +183,40 @@ class MemoryIntegration:
                 print(f"\n[MEMORY RETRIEVAL] Retrieved {len(relevant_memories)} memories for user {self.user_id or 'None'}:")
                 for i, memory in enumerate(relevant_memories):
                     print(f"  {i+1}. {memory.get('content')} (Category: {memory.get('category', 'unknown')})")
-                print(f"\n[MEMORY INTEGRATION] Memory context: '{memory_context[:100]}...'")
             else:
                 print(f"\n[MEMORY RETRIEVAL] No memories found for user {self.user_id or 'None'} matching: {current_message[:50]}...")
+
+            return relevant_memories
+        except Exception as e:
+            logger.error(f"Error in centralized memory retrieval: {e}")
+            print(f"\n[MEMORY INTEGRATION] Error in centralized memory retrieval: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
+            return []  # Return empty list on error
+
+    async def get_context_with_memories(self, current_message: str, force_retrieval: bool = False) -> str:
+        """Get relevant memories for the current message and format them for context.
+
+        Args:
+            current_message: The current message to find relevant memories for
+            force_retrieval: If True, prioritize memory retrieval
+
+        Returns:
+            Formatted string of memories for inclusion in the prompt
+        """
+        try:
+            # Use the centralized memory retrieval function
+            relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
+
+            # Format memories for context, indicating if retrieval was explicitly attempted
+            memory_context = self.memory_agent.format_memories_for_context(relevant_memories, retrieval_attempted=force_retrieval)
+
+            # Print statement for visibility
+            if relevant_memories:
+                print(f"\n[MEMORY INTEGRATION] Memory context: '{memory_context[:100]}...'")
+            else:
                 print(f"\n[MEMORY INTEGRATION] No memory context to add")
+
             return memory_context
         except Exception as e:
             logger.error(f"Error getting memory context: {e}")
@@ -197,10 +224,6 @@ class MemoryIntegration:
             import traceback
             print(f"  Traceback: {traceback.format_exc()}")
             return ""  # Return empty string on error
-        finally:
-            # Clean up the session
-            # No need to explicitly close ADK sessions
-            pass
 
     async def enhance_prompt_with_memories(self, prompt: str, current_message: str) -> str:
         """Enhance a prompt with relevant memories.
@@ -213,20 +236,9 @@ class MemoryIntegration:
             Enhanced prompt with memories
         """
         try:
-            # Check if the message contains phrases indicating memory retrieval intent
+            # Use the centralized memory retrieval function
             force_retrieval = self._detect_memory_retrieval_intent(current_message)
-            if force_retrieval:
-                logger.info("Detected memory retrieval intent in message for prompt enhancement")
-
-            # Create a dedicated session for this operation
-            session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
-
-            # Store the current message in the session for context
-            session.state["current_message"] = current_message
-            session.state["force_memory_retrieval"] = force_retrieval
-
-            # Get relevant memories
-            relevant_memories = await self.memory_agent.get_relevant_memories(current_message, force_retrieval)
+            relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
 
             # Format memories for context, indicating if retrieval was explicitly attempted
             memory_context = self.memory_agent.format_memories_for_context(relevant_memories, retrieval_attempted=force_retrieval)
@@ -257,21 +269,9 @@ class MemoryIntegration:
             Enhanced messages with memories
         """
         try:
-            # Check if the message contains phrases indicating memory retrieval intent
+            # Use the centralized memory retrieval function
             force_retrieval = self._detect_memory_retrieval_intent(current_message)
-            if force_retrieval:
-                logger.info("Detected memory retrieval intent in message for chat enhancement")
-                print(f"\n[MEMORY INTEGRATION] Detected memory retrieval intent in message: '{current_message[:50]}...'")
-
-            # Create a dedicated session for this operation
-            session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
-
-            # Store the current message in the session for context
-            session.state["current_message"] = current_message
-            session.state["force_memory_retrieval"] = force_retrieval
-
-            # Get relevant memories
-            relevant_memories = await self.memory_agent.get_relevant_memories(current_message, force_retrieval)
+            relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
 
             # Print the retrieved memories for debugging
             print(f"\n[MEMORY INTEGRATION] Retrieved {len(relevant_memories)} memories for message: '{current_message[:50]}...'")
@@ -591,14 +591,9 @@ class MemoryIntegration:
                     if memory2.get('id') in duplicates_to_remove:
                         continue
 
-                    # Check if either memory has high importance (8-10), if so, protect it from deduplication
+                    # Get importance values for later comparison if needed
                     importance1 = memory1.get('importance', 0)
                     importance2 = memory2.get('importance', 0)
-
-                    # Skip comparison if either memory has high importance
-                    if importance1 >= 8 or importance2 >= 8:
-                        print(f"  Skipping comparison for high-importance memory: '{memory1.get('content', '')[:50]}...' or '{memory2.get('content', '')[:50]}...'")
-                        continue
 
                     # Check if memories are similar
                     content1 = memory1.get('content', '')
@@ -606,11 +601,7 @@ class MemoryIntegration:
                     embedding1 = memory1.get('embedding', [])
                     embedding2 = memory2.get('embedding', [])
 
-                    # Skip comparison if either memory contains location information
-                    if any(location_term in content1.lower() for location_term in ['city', 'location', 'moved', 'live', 'address', 'residence']) or \
-                       any(location_term in content2.lower() for location_term in ['city', 'location', 'moved', 'live', 'address', 'residence']):
-                        print(f"  Skipping comparison for location memory: '{content1[:50]}...' or '{content2[:50]}...'")
-                        continue
+                    # No longer skipping location-related memories during deduplication
 
                     # Use the _is_similar_content method from memory_agent
                     is_similar = self.memory_agent._is_similar_content(
