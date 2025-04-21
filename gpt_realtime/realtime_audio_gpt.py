@@ -2159,8 +2159,8 @@ class RealtimeClient:
                     await asyncio.sleep(0.1)
 
                 # Safety timeout - if recording for too long without stopping
-                if current_time - start_time > 300.0:  # 5 minute maximum
-                    logger.warning("Recording timeout reached (5 minutes), stopping automatically")
+                if current_time - start_time > 900.0:  # 15 minute maximum
+                    logger.warning("Recording timeout reached (15 minutes), stopping automatically")
                     stop_recording = True
 
                 # Send periodic ping messages if no activity for more than 30 seconds
