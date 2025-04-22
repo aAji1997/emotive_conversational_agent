@@ -2504,6 +2504,28 @@ class RealtimeClient:
             else:
                 print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
 
+            # --- Start Sentiment Analysis Process for Chat Mode (if enabled) ---
+            if self.enable_sentiment_analysis and self.sentiment_manager is not None:
+                logger.info("Starting sentiment analysis process for chat mode...")
+                try:
+                    # Get the transcript directory for saving sentiment results
+                    if hasattr(self.transcript_processor, 'user_transcripts_dir'):
+                        # Use the same timestamp as the conversation for consistent file naming
+                        timestamp = time.strftime("%Y%m%d_%H%M%S")
+                        self.sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
+                        print(f"Sentiment results will be saved to: {self.sentiment_file_path}")
+
+                    # Start the sentiment analysis process
+                    if not self.sentiment_manager.start(self.sentiment_file_path):
+                        raise ValueError("Failed to start sentiment analysis process")
+
+                    logger.info("Sentiment analysis process started successfully for chat mode.")
+                except Exception as e:
+                    logger.error(f"Failed to start sentiment analysis process for chat mode: {e}")
+                    # Disable sentiment analysis if it fails to start
+                    self.enable_sentiment_analysis = False
+                    logger.warning("Sentiment analysis has been disabled due to startup failure.")
+
         # Start event receiver in background
         receive_task = asyncio.create_task(self.receive_events())
 
@@ -2643,6 +2665,26 @@ class RealtimeClient:
 
                         # Clear any buffered audio
                         self.audio_buffer = b''
+
+                        # Save and stop sentiment analysis if enabled
+                        if self.enable_sentiment_analysis and self.sentiment_manager:
+                            try:
+                                print("Saving and stopping sentiment analysis...")
+                                if not self.sentiment_file_saved and self.sentiment_file_path:
+                                    # Stop the process and save to the user-specific folder using our consistent file path
+                                    self.sentiment_manager.stop(custom_file_path=self.sentiment_file_path)
+                                    print(f"Saved sentiment analysis results to: {self.sentiment_file_path}")
+                                    self.sentiment_file_saved = True
+                                else:
+                                    # Either we've already saved or we don't have a file path
+                                    # Fall back to the default path if needed
+                                    self.sentiment_manager.stop()
+                                    if not self.sentiment_file_saved:
+                                        self.sentiment_file_saved = True
+                                logger.info("Sentiment analysis process stopped in chat mode.")
+                            except Exception as e:
+                                logger.error(f"Error stopping sentiment analysis process in chat mode: {e}")
+                                print(f"Error stopping sentiment analysis: {e}")
 
                         # No need to cancel responses again - already done above
 
