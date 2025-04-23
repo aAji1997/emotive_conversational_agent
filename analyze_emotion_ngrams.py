@@ -205,9 +205,13 @@ def analyze_emotion_ngrams(sentiment_data):
     return emotion_ngrams, emotion_scores, emotion_vectors
 
 def calculate_emotion_correlations(emotion_vectors):
-    """Calculate correlation between emotions."""
-    # Create a DataFrame for correlation analysis
+    """Calculate correlation matrix and p-values for emotion vectors."""
     df = pd.DataFrame(emotion_vectors)
+    
+    # Check if we have enough data points
+    if len(df) < 2:
+        print("\nWarning: Not enough data points to calculate correlations (minimum 2 required)")
+        return None, None
     
     # Calculate correlation matrix
     corr_matrix = df.corr()
@@ -226,6 +230,10 @@ def calculate_emotion_correlations(emotion_vectors):
 
 def plot_emotion_correlations(corr_matrix, p_values, output_dir):
     """Create a heatmap of emotion correlations."""
+    if corr_matrix is None or p_values is None:
+        print("Skipping correlation plot due to insufficient data")
+        return
+        
     plt.figure(figsize=(12, 10))
     
     # Create mask for significant correlations (p < 0.05)

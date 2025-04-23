@@ -7,16 +7,25 @@ import json
 import tempfile
 import wave
 import os
+import logging
 
-# Attempt to import google.genai, provide guidance if missing
+# Import the SharedEmotionState class
+from gpt_realtime.shared_emotion_state import SharedEmotionState
 try:
     from google import genai
 except ImportError:
     print("ERROR: The 'google-genai' library is required for sentiment analysis.")
     print("Please install it using: pip install google-genai")
-    # Optionally, exit or raise an error if essential
-    # raise ImportError("Missing dependency: google-genai")
-    genai = None # Set to None so checks later fail gracefully
+
+    raise ImportError("Missing dependency: google-genai")
+
+# Define the core emotions based on Plutchik's wheel
+CORE_EMOTIONS = [
+    "Joy", "Trust", "Fear", "Surprise",
+    "Sadness", "Disgust", "Anger", "Anticipation"
+]
+
+logger = logging.getLogger(__name__)
 
 
 class SentimentAnalysisProcess(multiprocessing.Process):
@@ -25,8 +34,6 @@ class SentimentAnalysisProcess(multiprocessing.Process):
     This runs independently to avoid blocking the main audio processing loop.
     Audio chunks (dictionaries with 'source', 'data', 'rate') are received via a queue.
     Results (dictionaries with 'timestamp', 'sentiment_value', etc.) are placed in a shared list.
-
-    Mirrors the sentiment analysis logic from gemini_live_audio.py.
     """
 
     def __init__(self, api_key, sentiment_model_name, audio_queue, sentiment_history_list):
@@ -171,17 +178,21 @@ class SentimentAnalysisProcess(multiprocessing.Process):
         timestamp = text_chunk.get('timestamp', time.time())
 
         try:
-            # Define the prompt for text sentiment analysis
+            # Define the prompt for text sentiment analysis with continuous values
             prompt = """Analyze the emotional state expressed in this text based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0 to 3 indicating its intensity in the text:
-- 0: Emotion is absent.
-- 1: Low intensity (e.g., Serenity for Joy, Apprehension for Fear).
-- 2: Medium intensity (e.g., Joy for Joy, Fear for Fear).
-- 3: High intensity (e.g., Ecstasy for Joy, Terror for Fear).
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the text, using precise decimal values for a truly continuous assessment:
+- 0.0: Emotion is completely absent.
+- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
+- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
+- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its integer score (0, 1, 2, or 3). Example format:
-{"Joy": 0, "Trust": 1, "Fear": 0, "Surprise": 2, "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 1}"""
+IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
+
+Consider how emotions blend and overlap in natural expression. For example, Joy and Trust often appear together, as do Fear and Surprise. Your scoring should reflect these natural emotional blends.
+
+Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+{"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model
             response = self.sentiment_client.models.generate_content(
@@ -215,9 +226,11 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 parsed_json = json.loads(cleaned_text)
                 if isinstance(parsed_json, dict):
                     # Validate and update scores, keeping defaults for missing/invalid keys
+                    # Support both integer and float values for more continuous emotional representation
                     for emotion in emotion_scores.keys():
-                        if emotion in parsed_json and isinstance(parsed_json[emotion], int) and 0 <= parsed_json[emotion] <= 3:
-                            emotion_scores[emotion] = parsed_json[emotion]
+                        if emotion in parsed_json and isinstance(parsed_json[emotion], (int, float)) and 0 <= parsed_json[emotion] <= 3:
+                            # Convert to float for continuous representation
+                            emotion_scores[emotion] = float(parsed_json[emotion])
                 else:
                     print(f"[Sentiment Analysis] WARNING: Parsed JSON is not a dictionary: '{cleaned_text}'. Using default scores.")
             except json.JSONDecodeError:
@@ -234,6 +247,10 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 "text": text[:100] + "..." if len(text) > 100 else text  # Store truncated text for reference
             }
             self.sentiment_history.append(result)
+
+            # No need to save to a file anymore - the scores will be updated in the shared state
+            # through the sentiment history list and _continuously_update_sentiment method
+            print(f"[Sentiment Analysis] Text sentiment scores will be updated in shared state")
 
             print(f"[Sentiment Analysis] Text Result Scores for {source}: {emotion_scores}")
 
@@ -330,17 +347,21 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
 
             # print(f"[Sentiment Analysis] File is ACTIVE. URI: {audio_file_resource.uri}") # Debug
 
-            # Define the prompt precisely matching the one in gemini_live_audio.py
+            # Define the prompt for audio sentiment analysis with continuous values
             prompt = """Analyze the user's emotional state expressed in this audio based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
 
-For each core emotion, provide a score from 0 to 3 indicating its intensity in the audio:
-- 0: Emotion is absent.
-- 1: Low intensity (e.g., Serenity for Joy, Apprehension for Fear).
-- 2: Medium intensity (e.g., Joy for Joy, Fear for Fear).
-- 3: High intensity (e.g., Ecstasy for Joy, Terror for Fear).
+For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the audio, using precise decimal values for a truly continuous assessment:
+- 0.0: Emotion is completely absent.
+- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
+- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
+- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
 
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its integer score (0, 1, 2, or 3). Example format:
-{"Joy": 0, "Trust": 1, "Fear": 0, "Surprise": 2, "Sadness": 0, "Disgust": 0, "Anger": 0, "Anticipation": 1}"""
+IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
+
+Pay special attention to vocal cues like tone, pitch, pace, and volume that indicate emotional states. Consider how emotions blend and overlap in natural speech. For example, Joy and Trust often appear together in voice, as do Fear and Surprise. Your scoring should reflect these natural emotional blends in the audio.
+
+Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+{"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model via the client's model interface
             # print("[Sentiment Analysis] Calling Gemini API for sentiment...") # Debug
@@ -381,9 +402,11 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 parsed_json = json.loads(cleaned_text)
                 if isinstance(parsed_json, dict):
                      # Validate and update scores, keeping defaults for missing/invalid keys
+                     # Support both integer and float values for more continuous emotional representation
                      for emotion in emotion_scores.keys():
-                         if emotion in parsed_json and isinstance(parsed_json[emotion], int) and 0 <= parsed_json[emotion] <= 3:
-                             emotion_scores[emotion] = parsed_json[emotion]
+                         if emotion in parsed_json and isinstance(parsed_json[emotion], (int, float)) and 0 <= parsed_json[emotion] <= 3:
+                             # Convert to float for continuous representation
+                             emotion_scores[emotion] = float(parsed_json[emotion])
                          # else: # Optional: Log if an expected emotion is missing or invalid
                          #     print(f"[Sentiment Analysis] WARNING: Missing or invalid score for '{emotion}' in response: {parsed_json.get(emotion)}")
                 else:
@@ -395,13 +418,23 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             # --- End New Result Parsing ---
 
             # Store the result in the shared list (passed during initialization)
+            # Get the source from the first user chunk if available
+            source = "user"  # Default to user
+            if user_chunks and isinstance(user_chunks[0], dict) and "source" in user_chunks[0]:
+                source = user_chunks[0]["source"]
+
             result = {
                 "timestamp": time.time(),
                 "emotion_scores": emotion_scores, # Store the dictionary of scores
                 "raw_response": raw_response_text,
-                "audio_duration_s": actual_duration_s
+                "audio_duration_s": actual_duration_s,
+                "source": source # Include the source
             }
             self.sentiment_history.append(result)
+
+            # No need to save to a file anymore - the scores will be updated in the shared state
+            # through the sentiment history list and _continuously_update_sentiment method
+            print(f"[Sentiment Analysis] Audio sentiment scores will be updated in shared state")
 
             print(f"[Sentiment Analysis] Result Scores: {emotion_scores} for {actual_duration_s:.1f}s audio segment.") # Debug
 
@@ -440,9 +473,482 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
         print("[Sentiment Process] Received stop signal.")
         self.exit_flag.set()
 
+class SentimentAnalysisManager:
+    """
+    Manager class that provides a clean interface between the realtime conversation process
+    and the sentiment analysis process. This class encapsulates all the multiprocessing
+    details and provides a simple API for sending audio data and retrieving sentiment results.
+    """
+
+    def __init__(self, google_api_key, sentiment_model_name="models/gemini-2.0-flash"):
+        """
+        Initialize the sentiment analysis manager.
+
+        Args:
+            google_api_key (str): The Google API key for Gemini.
+            sentiment_model_name (str): The name of the Gemini model to use for sentiment analysis.
+        """
+        self.google_api_key = google_api_key
+        self.sentiment_model_name = sentiment_model_name
+        self.manager = None
+        self.audio_queue = None
+        self.sentiment_history_list = None
+        self.sentiment_process = None
+        self.shared_emotion_scores = None
+        self.sentiment_update_thread = None
+        self.sentiment_stop_event = threading.Event()
+        self.sentiment_file_path = None
+        self.is_initialized = False
+
+        # Initialize components and store the result
+        self.is_initialized = self._initialize_components()
+
+    def _initialize_components(self):
+        """
+        Initialize the multiprocessing components needed for sentiment analysis.
+
+        Returns:
+            bool: True if initialization was successful, False otherwise.
+        """
+        # Clean up any existing components first
+        self._cleanup_components()
+
+        try:
+            if not self.google_api_key:
+                logger.warning("Sentiment analysis manager initialized without API key.")
+                return False
+
+            if not genai:
+                logger.warning("Sentiment analysis manager initialized without genai library.")
+                return False
+
+            # Test the Google API key by creating a client
+            try:
+                # Just creating the client is enough to verify the API key
+                _ = genai.Client(api_key=self.google_api_key)
+                logger.info(f"Successfully verified Google API key for model {self.sentiment_model_name}.")
+            except Exception as e:
+                logger.error(f"Failed to initialize Google API client: {e}")
+                return False
+
+            # Initialize multiprocessing components
+            try:
+                self.manager = multiprocessing.Manager()
+                self.audio_queue = self.manager.Queue(maxsize=500)  # Queue for audio chunks
+                self.sentiment_history_list = self.manager.list()  # Shared list for results
+
+                # Initialize the shared emotion state with a multiprocessing shared dictionary
+                shared_dict = self.manager.dict({
+                    'user': {emotion: 0 for emotion in CORE_EMOTIONS},
+                    'assistant': {emotion: 0 for emotion in CORE_EMOTIONS},
+                    'last_update_time': time.time()
+                })
+                self.shared_emotion_scores = SharedEmotionState(shared_dict)
+
+                logger.info(f"Sentiment analysis components initialized for model {self.sentiment_model_name}.")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to initialize multiprocessing components: {e}")
+                self._cleanup_components()  # Clean up partial initialization
+                return False
+        except Exception as e:
+            logger.error(f"Failed to initialize multiprocessing components for sentiment analysis: {e}")
+            # Clean up partial initialization
+            self._cleanup_components()
+            return False
+
+    def _cleanup_components(self):
+        """
+        Clean up multiprocessing components.
+        """
+        if self.manager:
+            try:
+                self.manager.shutdown()
+            except Exception as e:
+                logger.error(f"Error shutting down multiprocessing manager: {e}")
+            self.manager = None
+            self.audio_queue = None
+            self.sentiment_history_list = None
+            self.shared_emotion_scores = None
+
+    def start(self, sentiment_file_path=None):
+        """
+        Start the sentiment analysis process.
+
+        Args:
+            sentiment_file_path (str, optional): Path to save sentiment results.
+
+        Returns:
+            bool: True if started successfully, False otherwise.
+        """
+        if self.sentiment_process is not None and self.sentiment_process.is_alive():
+            logger.info("Sentiment analysis process already running.")
+            return True
+
+        # Check if initialization was successful
+        if not self.is_initialized:
+            logger.error("Cannot start sentiment analysis process: initialization failed.")
+            # Try to initialize again
+            self.is_initialized = self._initialize_components()
+            if not self.is_initialized:
+                return False
+
+        # Double-check that components are available
+        # Note: sentiment_history_list is a list, which is truthy even when empty
+        if self.audio_queue is None or self.sentiment_history_list is None or self.shared_emotion_scores is None:
+            logger.error("Cannot start sentiment analysis process: components not initialized properly.")
+            logger.error(f"audio_queue: {self.audio_queue}, sentiment_history_list: {self.sentiment_history_list}, shared_emotion_scores: {self.shared_emotion_scores}")
+            return False
+
+        self.sentiment_file_path = sentiment_file_path
+
+        try:
+            # Create and start the sentiment analysis process
+            self.sentiment_process = SentimentAnalysisProcess(
+                api_key=self.google_api_key,
+                sentiment_model_name=self.sentiment_model_name,
+                audio_queue=self.audio_queue,
+                sentiment_history_list=self.sentiment_history_list
+            )
+            self.sentiment_process.start()
+            logger.info("Sentiment analysis process started successfully.")
+
+            # Start the sentiment update thread
+            self.sentiment_stop_event.clear()
+            self.sentiment_update_thread = threading.Thread(
+                target=self._continuously_update_sentiment,
+                daemon=True
+            )
+            self.sentiment_update_thread.start()
+            logger.info("Sentiment update thread started.")
+
+            return True
+        except Exception as e:
+            logger.error(f"Failed to start sentiment analysis process: {e}")
+            if self.sentiment_process:
+                try:
+                    self.sentiment_process.terminate()
+                except Exception:
+                    pass
+                self.sentiment_process = None
+            return False
+
+    def save_results(self, custom_file_path=None):
+        """
+        Explicitly save the current sentiment results to a file.
+
+        Args:
+            custom_file_path (str, optional): Custom file path to save results to.
+                If not provided, uses the path set during start().
+
+        Returns:
+            bool: True if saved successfully, False otherwise.
+        """
+        if not self.sentiment_history_list:
+            logger.warning("No sentiment results to save.")
+            return False
+
+        file_path = custom_file_path or self.sentiment_file_path
+        if not file_path:
+            logger.warning("No file path provided for saving sentiment results.")
+            return False
+
+        try:
+            # Convert the shared list to a regular list
+            sentiment_results = list(self.sentiment_history_list)
+
+            # Save to file
+            with open(file_path, 'w') as f:
+                json.dump(sentiment_results, f, indent=2)
+
+            logger.info(f"Saved {len(sentiment_results)} sentiment results to {file_path}")
+            print(f"Saved sentiment analysis results to: {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error saving sentiment results: {e}")
+            return False
+
+    def stop(self, custom_file_path=None):
+        """
+        Stop the sentiment analysis process.
+
+        Args:
+            custom_file_path (str, optional): Custom file path to save results to before stopping.
+                If not provided, uses the path set during start().
+
+        Returns:
+            bool: True if stopped successfully, False otherwise.
+        """
+        # Save results one last time before stopping
+        if custom_file_path:
+            self.save_results(custom_file_path=custom_file_path)
+        elif self.sentiment_file_path:
+            self.save_results()
+
+        # Stop the update thread first
+        if self.sentiment_update_thread and self.sentiment_update_thread.is_alive():
+            self.sentiment_stop_event.set()
+            self.sentiment_update_thread.join(timeout=5)
+            if self.sentiment_update_thread.is_alive():
+                logger.warning("Sentiment update thread did not terminate gracefully.")
+            self.sentiment_update_thread = None
+
+        # Stop the sentiment process
+        if self.sentiment_process and self.sentiment_process.is_alive():
+            try:
+                self.sentiment_process.stop()
+                self.sentiment_process.join(timeout=15)  # Wait longer for potential network ops
+
+                if self.sentiment_process.is_alive():
+                    logger.warning("Sentiment process did not terminate gracefully. Forcing termination.")
+                    self.sentiment_process.terminate()
+                    self.sentiment_process.join()
+            except Exception as e:
+                logger.error(f"Error stopping sentiment process: {e}")
+                return False
+
+        self.sentiment_process = None
+        return True
+
+    def send_audio_chunk(self, audio_data, sample_rate, source="user"):
+        """
+        Send an audio chunk for sentiment analysis.
+
+        Args:
+            audio_data (bytes): The audio data to analyze.
+            sample_rate (int): The sample rate of the audio data.
+            source (str): The source of the audio ("user" or "model").
+
+        Returns:
+            bool: True if sent successfully, False otherwise.
+        """
+        if not self.is_running() or not self.audio_queue:
+            return False
+
+        try:
+            # If this is a user audio chunk, check if we should skip it
+            if source == "user" and self.shared_emotion_scores:
+                # Skip if assistant is responding
+                if self.shared_emotion_scores.is_assistant_responding():
+                    # Skip user audio chunks while assistant is responding to prevent anomalous updates
+                    logger.debug("Skipping user audio chunk while assistant is responding")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # Skip if VAD has not detected speech
+                if not self.shared_emotion_scores.is_vad_speech_detected():
+                    # Skip user audio chunks when VAD has not detected speech to prevent spurious updates
+                    logger.debug("Skipping user audio chunk when VAD has not detected speech")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # For silence, we'll still process the audio but log it
+                # This ensures the visualization continues to update
+                if self.shared_emotion_scores.is_silence_detected():
+                    logger.debug("Processing user audio chunk during silence period (for visualization)")
+
+            audio_chunk = {
+                "source": source,
+                "data": audio_data,
+                "rate": sample_rate,
+                "timestamp": time.time()
+            }
+            # Use put_nowait to avoid blocking the main thread
+            # If the queue is full, we'll just skip this chunk
+            try:
+                self.audio_queue.put_nowait(audio_chunk)
+                return True
+            except queue.Full:
+                logger.warning("Sentiment analysis audio queue is full. Skipping chunk.")
+                return False
+        except Exception as e:
+            logger.error(f"Error sending audio chunk to sentiment queue: {e}")
+            return False
+
+    def send_text(self, text, source="user"):
+        """
+        Send text for sentiment analysis.
+
+        Args:
+            text (str): The text to analyze.
+            source (str): The source of the text ("user" or "model").
+
+        Returns:
+            bool: True if sent successfully, False otherwise.
+        """
+        if not self.is_running() or not self.audio_queue:
+            return False
+
+        try:
+            # If this is user text, check if we should skip it
+            if source == "user" and self.shared_emotion_scores:
+                # Skip if assistant is responding
+                if self.shared_emotion_scores.is_assistant_responding():
+                    # Skip user text while assistant is responding to prevent anomalous updates
+                    logger.info("Skipping user text sentiment analysis while assistant is responding")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # Skip if VAD has not detected speech
+                if not self.shared_emotion_scores.is_vad_speech_detected():
+                    # Skip user text when VAD has not detected speech to prevent spurious updates
+                    logger.info("Skipping user text sentiment analysis when VAD has not detected speech")
+                    return True  # Return True to indicate success (we're intentionally skipping)
+
+                # For silence, we'll still process the text but log it
+                # This ensures the visualization continues to update
+                if self.shared_emotion_scores.is_silence_detected():
+                    logger.info("Processing user text during silence period (for visualization)")
+
+            text_sentiment_request = {
+                "source": source,
+                "text": text,
+                "timestamp": time.time()
+            }
+            # Use put_nowait to avoid blocking the main thread
+            # If the queue is full, we'll just skip this text
+            try:
+                self.audio_queue.put_nowait(text_sentiment_request)
+                logger.info(f"Sent {source} text for sentiment analysis: {text[:30]}...")
+                return True
+            except queue.Full:
+                logger.warning("Sentiment analysis queue is full. Skipping text analysis.")
+                return False
+        except Exception as e:
+            logger.error(f"Error sending text for sentiment analysis: {e}")
+            return False
+
+    def get_current_emotion_scores(self):
+        """
+        Get the current emotion scores.
+
+        Returns:
+            dict: A dictionary of emotion scores, or None if not available.
+        """
+        if not self.shared_emotion_scores:
+            return None
+
+        try:
+            # Use the SharedEmotionState's get_emotion_scores method
+            user_scores, assistant_scores = self.shared_emotion_scores.get_emotion_scores()
+
+            # Create a dictionary with both user and assistant scores
+            result = {
+                'user': user_scores,
+                'assistant': assistant_scores
+            }
+
+            # Print the scores for debugging
+            print(f"\n[SENTIMENT ANALYSIS] Current emotion scores: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting emotion scores: {e}")
+            traceback.print_exc()  # Print the full traceback for debugging
+            return None
+
+    def is_running(self):
+        """
+        Check if the sentiment analysis process is running.
+
+        Returns:
+            bool: True if running, False otherwise.
+        """
+        return self.sentiment_process is not None and self.sentiment_process.is_alive()
+
+    def _continuously_update_sentiment(self):
+        """
+        Continuously update the shared emotion scores from the sentiment history list.
+        This runs in a separate thread.
+        """
+        sentiment_results = []
+        last_processed_index = -1
+
+        while not self.sentiment_stop_event.is_set():
+            try:
+                # Check if there are new results to process
+                current_len = len(self.sentiment_history_list)
+                if current_len > last_processed_index + 1:
+                    # Process new results
+                    for i in range(last_processed_index + 1, current_len):
+                        try:
+                            result = self.sentiment_history_list[i]
+
+                            # Add to sentiment results
+                            sentiment_results.append(result)
+
+                            # Update the appropriate shared dictionary based on source
+                            if 'emotion_scores' in result and 'source' in result:
+                                source = result.get('source', 'user')  # Default to user if source not specified
+
+                                try:
+                                    # Update the appropriate emotion scores using the SharedEmotionState
+                                    if source == 'user':
+                                        # Check if the assistant is currently responding or if silence is detected
+                                        is_assistant_responding = self.shared_emotion_scores.is_assistant_responding()
+                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
+
+                                        # Skip updating user sentiment only if assistant is responding
+                                        # We'll still update during silence to ensure the visualization shows something
+                                        if is_assistant_responding:
+                                            print(f"\n[SENTIMENT ANALYSIS] Skipping user emotion update while assistant is responding")
+                                            logger.info(f"Skipped user emotion update while assistant is responding")
+                                        else:
+                                            # Update user emotion scores if assistant is not responding
+                                            # Even if silence is detected, we'll still update but log it
+                                            if is_silence_detected:
+                                                logger.info(f"Updating user emotion scores during silence period (for visualization)")
+
+                                            success = self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
+                                            if success:
+                                                print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {result['emotion_scores']}")
+                                                logger.info(f"Updated user emotion scores: {result['emotion_scores']}")
+                                            else:
+                                                logger.error(f"Failed to update user emotion scores")
+                                    elif source == 'model' or source == 'assistant':
+                                        # For assistant, always update regardless of silence
+                                        # This ensures the visualization continues to update
+                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
+
+                                        # Log if we're in a silence period, but still update
+                                        if is_silence_detected:
+                                            logger.info(f"Updating assistant emotion scores during silence period (for visualization)")
+
+                                        # Always update assistant emotion scores
+                                        success = self.shared_emotion_scores.update_emotion_scores('assistant', result['emotion_scores'])
+                                        if success:
+                                            print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {result['emotion_scores']}")
+                                            logger.info(f"Updated assistant emotion scores: {result['emotion_scores']}")
+                                        else:
+                                            logger.error(f"Failed to update assistant emotion scores")
+                                except Exception as update_error:
+                                    logger.error(f"Error updating emotion scores: {update_error}")
+                        except Exception as result_error:
+                            logger.error(f"Error processing result at index {i}: {result_error}")
+                            continue
+
+                    # Save updated results to JSON file if path is provided
+                    if self.sentiment_file_path:
+                        try:
+                            with open(self.sentiment_file_path, 'w') as f:
+                                json.dump(sentiment_results, f, indent=2)
+                            logger.info(f"Saved {len(sentiment_results)} sentiment results to {self.sentiment_file_path}")
+                        except Exception as e:
+                            logger.error(f"Error saving sentiment results: {e}")
+
+                    last_processed_index = current_len - 1
+
+                # Sleep for a longer duration to reduce CPU usage and potential blocking
+                time.sleep(1.0)  # Check once per second
+            except Exception as e:
+                logger.error(f"Error in sentiment update thread: {e}")
+                time.sleep(2)  # Sleep longer on error to avoid tight error loops
+
+        logger.info("Sentiment update thread stopped.")
+
+
 # Example usage (for testing purposes, would be integrated elsewhere)
 if __name__ == '__main__':
     print("Running sentiment_analyzer.py directly for testing...")
+
+    # Configure logging
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
     # --- Configuration ---
     try:
@@ -467,28 +973,15 @@ if __name__ == '__main__':
 
     print(f"Using sentiment model: {SENTIMENT_MODEL}")
 
+    # Create the sentiment analysis manager
+    sentiment_manager = SentimentAnalysisManager(
+        google_api_key=google_api_key,
+        sentiment_model_name=SENTIMENT_MODEL
+    )
 
-    # --- Setup multiprocessing components ---
-    manager = multiprocessing.Manager()
-    audio_q = manager.Queue(maxsize=200) # Increased queue size for simulation
-    results_list = manager.list()
-
-    # --- Start the sentiment process ---
-    sentiment_proc = None
-    try:
-        sentiment_proc = SentimentAnalysisProcess(
-            api_key=google_api_key,
-            sentiment_model_name=SENTIMENT_MODEL,
-            audio_queue=audio_q,
-            sentiment_history_list=results_list
-        )
-        sentiment_proc.start()
-    except RuntimeError as e:
-        print(f"FATAL ERROR starting sentiment process: {e}")
-        exit(1)
-    except Exception as e:
-        print(f"FATAL ERROR during sentiment process startup: {e}")
-        traceback.print_exc()
+    # Start the sentiment analysis process
+    if not sentiment_manager.start():
+        print("Failed to start sentiment analysis process.")
         exit(1)
 
     # --- Simulate sending audio chunks ---
@@ -504,79 +997,37 @@ if __name__ == '__main__':
     for i in range(num_user_chunks):
         # In a real scenario, 'data' would be actual audio bytes
         chunk_data = SILENCE_CHUNK # Replace with actual audio data for real testing
-        audio_chunk = {
-            'source': 'user',
-            'data': chunk_data,
-            'rate': SAMPLE_RATE,
-            'timestamp': time.time()
-        }
-        try:
-             audio_q.put(audio_chunk, timeout=1)
-        except queue.Full:
-             print("Test Warning: Audio queue full during user simulation.")
-             break
-        # time.sleep(CHUNK_DURATION_S * 0.8) # Simulate real-time arrival slightly faster
+        sentiment_manager.send_audio_chunk(chunk_data, SAMPLE_RATE, "user")
         time.sleep(0.05) # Faster simulation
 
     # Simulate some model speech (5 seconds worth - should be ignored)
     print("Simulating model speech (should be ignored)...")
     num_model_chunks = int(5 / CHUNK_DURATION_S)
     for i in range(num_model_chunks):
-        audio_chunk = {
-            'source': 'model',
-            'data': SILENCE_CHUNK,
-            'rate': 24000, # Example different rate for model
-            'timestamp': time.time()
-        }
-        try:
-            audio_q.put(audio_chunk, timeout=1)
-        except queue.Full:
-            print("Test Warning: Audio queue full during model simulation.")
-            break
-        # time.sleep(CHUNK_DURATION_S * 0.8)
+        sentiment_manager.send_audio_chunk(SILENCE_CHUNK, 24000, "model")
         time.sleep(0.05)
 
-    # Wait for processing to occur (adjust time based on chunk_duration_s in SentimentAnalysisProcess)
-    # It processes in 10s batches, so wait at least that long + buffer time + API time
+    # Simulate sending text
+    print("Simulating sending text...")
+    sentiment_manager.send_text("I'm feeling really happy today!", "user")
+    sentiment_manager.send_text("That's great to hear. I'm glad you're doing well.", "model")
+
+    # Wait for processing to occur
     wait_time = 15
     print(f"\nWaiting {wait_time}s for sentiment analysis to process...")
     time.sleep(wait_time)
 
-    # --- Stop the process and collect results ---
-    print("\nStopping sentiment process...")
-    if sentiment_proc and sentiment_proc.is_alive():
-        sentiment_proc.stop()
-        sentiment_proc.join(timeout=15) # Wait longer for potential network ops
-
-        if sentiment_proc.is_alive():
-            print("WARNING: Sentiment process did not terminate gracefully. Forcing termination.")
-            sentiment_proc.terminate()
-            sentiment_proc.join()
-    elif sentiment_proc:
-         print("Sentiment process already terminated.")
+    # Get current emotion scores
+    print("\nCurrent emotion scores:")
+    scores = sentiment_manager.get_current_emotion_scores()
+    if scores:
+        scores_str = ", ".join([f"{k}: {v}" for k, v in scores.items()])
+        print(f"Scores: [{scores_str}]")
     else:
-         print("Sentiment process was not started.")
+        print("No emotion scores available.")
 
-    print("\n--- Sentiment Analysis Results ---")
-    # Convert shared list to regular list for easier handling
-    final_results = list(results_list)
-
-    if not final_results:
-        print("No sentiment results were generated (or process failed). Check logs above.")
-    else:
-        for result in final_results:
-            if 'error' in result:
-                 ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                 print(f"[{ts}] ERROR: {result['error']}")
-                 if 'traceback' in result:
-                      print(result['traceback'])
-            else:
-                ts = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(result.get('timestamp', time.time())))
-                duration = result.get('audio_duration_s', 'N/A')
-                scores = result.get('emotion_scores', {}) # Get the scores dictionary
-                raw = result.get('raw_response', '')
-                # Format the scores for printing
-                scores_str = ", ".join([f"{k}: {v}" for k, v in scores.items()])
-                print(f"[{ts}] Scores: [{scores_str}], Duration: {duration:.1f}s, Raw: '{raw}'")
+    # Stop the sentiment analysis process
+    print("\nStopping sentiment analysis process...")
+    sentiment_manager.stop()
 
     print("\nTest finished.")

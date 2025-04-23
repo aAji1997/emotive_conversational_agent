@@ -3,6 +3,9 @@ import asyncio
 import json
 import logging
 import time
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -11,6 +14,8 @@ from google.adk.models.lite_llm import LiteLlm # For multi-model support
 from google.adk.sessions import InMemorySessionService
 from google.adk.runners import Runner
 from google.genai import types # For creating message Content/Parts
+
+import spacy
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,6 +31,7 @@ class MemoryDatabaseConnector:
             supabase_url: URL for the Supabase instance
             supabase_key: API key for the Supabase instance
         """
+        self.nlp = spacy.load("en_core_web_md") # medium english model
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
         self.connected = False
@@ -45,6 +51,82 @@ class MemoryDatabaseConnector:
         else:
             logger.info("No Supabase credentials provided, using in-memory storage")
 
+    def connect_to_database(self):
+        """Connect to the PostgreSQL database."""
+        try:
+            # Load environment variables
+            load_dotenv()
+            user = os.getenv("user")
+            password = os.getenv("password")
+            host = os.getenv("host")
+            port = os.getenv("port")
+            dbname = os.getenv("dbname")
+
+            if not all([user, password, host, port, dbname]):
+                logger.error("Missing required environment variables in .env file")
+                return False
+
+            # Connect to the database
+            self.connection = psycopg2.connect(
+                user=user,
+                password=password,
+                host=host,
+                port=port,
+                dbname=dbname
+            )
+            # Use RealDictCursor to get results as dictionaries
+            self.cursor = self.connection.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            self.connected = True
+            logger.info("Connected to PostgreSQL database")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to database: {e}")
+            logger.info("Using in-memory storage for memories instead")
+            self.connected = False
+            return False
+
+    def create_embedding(self, text: str) -> List[float]:
+        """Create a vector embedding for a given text.
+
+        Args:
+            text: Text to create an embedding for
+
+        Returns:
+            List of floats representing the embedding
+        """
+        try:
+            # First try to use OpenAI API for embeddings if we're connected to Supabase
+            if self.connected:
+                try:
+                    # Try to use the Supabase pgvector functions
+                    # This will use the OpenAI API through Supabase's Edge Functions
+                    result = self.client.rpc('generate_embeddings', {'input_text': text}).execute()
+                    if result.data:
+                        logger.info("Generated embedding using Supabase RPC function")
+                        return result.data
+                except Exception as e:
+                    logger.warning(f"Could not generate embedding using Supabase RPC: {e}")
+
+            # Fall back to spaCy if Supabase embedding generation fails
+            doc = self.nlp(text)
+            embedding = doc.vector.tolist()  # Convert to list for JSON compatibility
+
+            # Make sure the embedding is the right size (1536 for OpenAI compatibility)
+            if len(embedding) < 1536:
+                # Pad with zeros if needed
+                embedding = embedding + [0.0] * (1536 - len(embedding))
+            elif len(embedding) > 1536:
+                # Truncate if needed
+                embedding = embedding[:1536]
+
+            logger.info(f"Generated embedding using spaCy (length: {len(embedding)})")
+            return embedding
+        except Exception as e:
+            logger.error(f"Error creating embedding: {e}")
+            # Return a placeholder embedding as a last resort
+            logger.warning("Using placeholder embedding")
+            return [0.0] * 1536
+
     def store_memory(self, memory_data: Dict[str, Any]) -> str:
         """Store a memory in the database.
 
@@ -55,6 +137,7 @@ class MemoryDatabaseConnector:
                 - metadata: Additional metadata about the memory
                 - timestamp: When the memory was created
                 - source: Source of the memory (user, assistant, etc.)
+                - user_id: Optional user ID to associate with the memory
 
         Returns:
             memory_id: ID of the stored memory
@@ -62,11 +145,21 @@ class MemoryDatabaseConnector:
         memory_id = str(time.time())  # Simple timestamp-based ID
         memory_data['id'] = memory_id
 
+        if 'timestamp' not in memory_data:
+            memory_data['timestamp'] = datetime.now().isoformat()
+
+        if 'embedding' not in memory_data:
+            embedding = self.create_embedding(memory_data['content'])
+            memory_data['embedding'] = embedding
+
         if self.connected:
             try:
                 # Store in Supabase
                 self.client.table('memories').insert(memory_data).execute()
                 logger.info(f"Stored memory in Supabase with ID: {memory_id}")
+
+                # Print statement for visibility
+                print(f"\n[MEMORY STORAGE] New memory added to database via memory agent:\n  Content: {memory_data.get('content')}\n  User ID: {memory_data.get('user_id') or 'None'}\n  Category: {memory_data.get('category', 'general')}\n  Importance: {memory_data.get('importance', 5)}\n  ID: {memory_id}")
             except Exception as e:
                 logger.error(f"Failed to store memory in Supabase: {e}")
                 # Fall back to in-memory storage
@@ -79,25 +172,92 @@ class MemoryDatabaseConnector:
 
         return memory_id
 
-    def retrieve_memories(self, query_embedding: List[float], limit: int = 5) -> List[Dict[str, Any]]:
+    def retrieve_memories(self, query_embedding: List[float], limit: int = 5, user_id: str = None) -> List[Dict[str, Any]]:
         """Retrieve memories similar to the query embedding.
 
         Args:
             query_embedding: Vector embedding to search for
             limit: Maximum number of memories to return
+            user_id: Optional user ID to filter memories by
 
         Returns:
             List of memory dictionaries
         """
         if self.connected:
             try:
-                # Search in Supabase using vector similarity
-                result = self.client.rpc(
-                    'match_memories',
-                    {'query_embedding': query_embedding, 'match_threshold': 0.7, 'match_count': limit}
-                ).execute()
+                # Search using vector similarity with proper vector format
+                # The vector needs to be passed as a simple array, not as a string with ::vector cast
+                # Prepare parameters
+                params = {
+                    'query_embedding': query_embedding,  # Pass the raw array
+                    'match_threshold': 0.5,
+                    'match_count': limit
+                }
 
-                return result.data
+                # Use the appropriate function based on whether user_id is provided
+                if user_id:
+                    try:
+                        # Try to use the user-specific function first
+                        params['user_id_param'] = user_id
+                        result = self.client.rpc('match_memories_by_user', params).execute()
+                        logger.info(f"Using match_memories_by_user with user_id: {user_id}")
+                    except Exception as e:
+                        logger.error(f"Error using match_memories_by_user: {e}")
+                        # Fall back to the generic function
+                        del params['user_id_param']
+                        result = self.client.rpc('match_memories', params).execute()
+                        logger.info("Falling back to match_memories without user_id")
+                else:
+                    # Use the generic function
+                    result = self.client.rpc('match_memories', params).execute()
+
+                if result.data:
+                    logger.info(f"Found {len(result.data)} similar memories using vector similarity")
+
+                    # Process the embeddings to ensure they're in the correct format
+                    for memory in result.data:
+                        if 'embedding' in memory and isinstance(memory['embedding'], str):
+                            try:
+                                # Try to parse the embedding string
+                                import ast
+                                # First try to parse as a Python list literal
+                                try:
+                                    memory['embedding'] = ast.literal_eval(memory['embedding'])
+                                    logger.info(f"Parsed embedding for memory {memory.get('id')} using ast.literal_eval")
+                                except (ValueError, SyntaxError):
+                                    # If that fails, try to parse as a comma-separated string of floats
+                                    try:
+                                        # Remove brackets if present
+                                        clean_str = memory['embedding'].strip('[]')
+                                        # Split by comma and convert to float
+                                        memory['embedding'] = [float(x.strip()) for x in clean_str.split(',') if x.strip()]
+                                        logger.info(f"Parsed embedding for memory {memory.get('id')} using manual parsing")
+                                    except Exception as e2:
+                                        logger.warning(f"Could not parse embedding for memory {memory.get('id')} using manual parsing: {e2}")
+                                        # Keep the string version if parsing fails
+                            except Exception as e:
+                                logger.warning(f"Could not parse embedding for memory {memory.get('id')}: {e}")
+                                # Keep the string version if parsing fails
+
+                        # Add debug information about the memory content and embedding
+                        if 'content' in memory:
+                            content = memory.get('content', '')
+                            # Check for location information
+                            if 'chicago' in content.lower() and 'seattle' in content.lower():
+                                logger.info(f"Found location memory: {content}")
+                            # Check for food preferences
+                            if 'food' in content.lower() and 'favorite' in content.lower():
+                                logger.info(f"Found food preference memory: {content}")
+
+                            # Log embedding information
+                            embedding = memory.get('embedding', [])
+                            if embedding:
+                                if isinstance(embedding, list):
+                                    logger.info(f"Memory {memory.get('id')} has embedding of type list with length {len(embedding)}")
+                                else:
+                                    logger.info(f"Memory {memory.get('id')} has embedding of type {type(embedding)}")
+
+                    return result.data
             except Exception as e:
                 logger.error(f"Failed to retrieve memories from Supabase: {e}")
                 # Fall back to in-memory search
@@ -121,9 +281,8 @@ class MemoryDatabaseConnector:
         if self.connected:
             try:
                 result = self.client.table('memories').select('*').eq('id', memory_id).execute()
-                if result.data:
+                if result.data and len(result.data) > 0:
                     return result.data[0]
-                return None
             except Exception as e:
                 logger.error(f"Failed to retrieve memory from Supabase: {e}")
                 # Fall back to in-memory search
@@ -133,6 +292,54 @@ class MemoryDatabaseConnector:
             if memory.get('id') == memory_id:
                 return memory
         return None
+
+    def get_memories_by_user(self, user_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get memories for a specific user.
+
+        Args:
+            user_id: User ID to filter memories by
+            limit: Maximum number of memories to return
+
+        Returns:
+            List of memory dictionaries
+        """
+        if self.connected:
+            try:
+                result = self.client.table('memories').select('*').eq('user_id', user_id).order('timestamp', desc=True).limit(limit).execute()
+
+                # Process the embeddings to ensure they're in the correct format
+                for memory in result.data:
+                    if 'embedding' in memory and isinstance(memory['embedding'], str):
+                        try:
+                            # First try to parse as a Python list literal
+                            import ast
+                            try:
+                                memory['embedding'] = ast.literal_eval(memory['embedding'])
+                                logger.info(f"Parsed embedding for memory {memory.get('id')} using ast.literal_eval")
+                            except (ValueError, SyntaxError):
+                                # If that fails, try to parse as a comma-separated string of floats
+                                try:
+                                    # Remove brackets if present
+                                    clean_str = memory['embedding'].strip('[]')
+                                    # Split by comma and convert to float
+                                    memory['embedding'] = [float(x.strip()) for x in clean_str.split(',') if x.strip()]
+                                    logger.info(f"Parsed embedding for memory {memory.get('id')} using manual parsing")
+                                except Exception as e2:
+                                    logger.warning(f"Could not parse embedding for memory {memory.get('id')} using manual parsing: {e2}")
+                                    # Keep the string version if parsing fails
+                        except Exception as e:
+                            logger.warning(f"Could not parse embedding for memory {memory.get('id')}: {e}")
+                            # Keep the string version if parsing fails
+
+                return result.data
+            except Exception as e:
+                logger.error(f"Failed to get memories for user {user_id}: {e}")
+                # Fall back to in-memory search
+
+        # Filter in-memory memories by user_id
+        user_memories = [m for m in self.memories if m.get('user_id') == user_id]
+        sorted_memories = sorted(user_memories, key=lambda x: x.get('timestamp', 0), reverse=True)
+        return sorted_memories[:limit]
 
     def delete_memory(self, memory_id: str) -> bool:
         """Delete a memory from the database.
@@ -145,9 +352,13 @@ class MemoryDatabaseConnector:
         """
         if self.connected:
             try:
-                self.client.table('memories').delete().eq('id', memory_id).execute()
-                logger.info(f"Deleted memory from Supabase with ID: {memory_id}")
-                return True
+                result = self.client.table('memories').delete().eq('id', memory_id).execute()
+                if result.data and len(result.data) > 0:
+                    logger.info(f"Deleted memory from Supabase with ID: {memory_id}")
+                    return True
+                else:
+                    logger.warning(f"Memory with ID {memory_id} not found in Supabase")
+                    # Fall back to in-memory deletion
             except Exception as e:
                 logger.error(f"Failed to delete memory from Supabase: {e}")
                 # Fall back to in-memory deletion
@@ -162,21 +373,37 @@ class MemoryDatabaseConnector:
         logger.warning(f"Memory with ID {memory_id} not found")
         return False
 
+    def close(self):
+        """Close the database connection."""
+        # No need to close Supabase client connection
+        self.connected = False
+        logger.info("Database connection closed")
+
 class ConversationMemoryAgent:
-    def __init__(self, storage_agent_model, retrieval_agent_model, orchestrator_agent_model, session_service):
+    def __init__(self, storage_agent_model, retrieval_agent_model, orchestrator_agent_model, session_service, user_id=None, supabase_url=None, supabase_key=None):
         """
         This agent will be responsible for determining which information about a user or events that occurred during a real-time or text conversation should be saved as a memory embedding for future reference.
-        The agent will also be responsible for retrieving relevant memories when needed. Memories will be stored in a supabase vector database via the pgvector extension.
+        The agent will also be responsible for retrieving relevant memories when needed. Memories will be stored in a Supabase vector database via the pgvector extension.
         This agent will in-turn be composed of three sub-agents: one for storing memories, one for retrieving memories, and an orchestrator agent that will determine when
           to store and retrieve memories, as well as whether stored or retrieved memories are sufficiently relevant to the current conversation.
+
+        Args:
+            storage_agent_model: Model for the storage agent
+            retrieval_agent_model: Model for the retrieval agent
+            orchestrator_agent_model: Model for the orchestrator agent
+            session_service: Session service for managing sessions
+            user_id: Optional user ID for user-specific memories
+            supabase_url: Optional Supabase URL for database connection
+            supabase_key: Optional Supabase API key for database connection
         """
         self.storage_agent_model = storage_agent_model
         self.retrieval_agent_model = retrieval_agent_model
         self.orchestrator_agent_model = orchestrator_agent_model
         self.session_service = session_service
+        self.user_id = user_id
 
         # Initialize the database connector
-        self.db_connector = MemoryDatabaseConnector()
+        self.db_connector = MemoryDatabaseConnector(supabase_url, supabase_key)
 
         # Initialize conversation history
         self.conversation_history = []
@@ -371,9 +598,9 @@ class ConversationMemoryAgent:
 
             # The retrieval agent should have used the retrieve_memories tool,
             # which would have stored the results in the database connector
-            # We'll retrieve the most recent memories as a fallback
-            dummy_embedding = [0.1] * 1536  # Placeholder embedding
-            relevant_memories = self.db_connector.retrieve_memories(dummy_embedding, limit=3)
+            # Generate an embedding for the current message and retrieve relevant memories
+            message_embedding = self.db_connector.create_embedding(current_message)
+            relevant_memories = self.db_connector.retrieve_memories(message_embedding, limit=3, user_id=self.user_id)
 
             return relevant_memories
         except Exception as e:
@@ -395,12 +622,37 @@ class ConversationMemoryAgent:
             Response message
         """
         try:
+            print(f"\n[DEBUG] _handle_store_memory called in memory_agent_direct.py")
+            print(f"  Params: {params}")
+            print(f"  Session: {session}")
+            print(f"  User ID: {self.user_id}")
+            print(f"  Supabase URL: {self.db_connector.supabase_url[:20]}..." if self.db_connector.supabase_url else "  Supabase URL: None")
+            print(f"  Connected to Supabase: {self.db_connector.connected}")
+
             content = params.get("content")
             importance = params.get("importance")
             category = params.get("category")
 
+            print(f"  Content: {content}")
+            print(f"  Importance: {importance}")
+            print(f"  Category: {category}")
+
             if not content or not importance or not category:
+                print(f"  ERROR: Missing required parameters")
                 return "Error: Missing required parameters. Please provide content, importance, and category."
+
+            # Get session state if available
+            current_role = "unknown"
+            conversation_mode = "unknown"
+            if session:
+                try:
+                    current_role = session.get("current_role", "unknown")
+                    conversation_mode = session.get("conversation_mode", "unknown")
+                    print(f"  Current role from session: {current_role}")
+                    print(f"  Conversation mode from session: {conversation_mode}")
+                except Exception as e:
+                    print(f"  ERROR getting session state: {e}")
+                    logger.warning(f"Could not get session state: {e}")
 
             # Create memory data
             memory_data = {
@@ -408,18 +660,34 @@ class ConversationMemoryAgent:
                 "importance": importance,
                 "category": category,
                 "timestamp": datetime.now().isoformat(),
-                "source": session.get("current_role", "unknown"),
-                "conversation_mode": session.get("conversation_mode", "unknown"),
-                "embedding": [0.1] * 1536  # Placeholder embedding
+                "source": current_role,
+                "conversation_mode": conversation_mode,
+                "user_id": self.user_id  # Add user_id if available
             }
 
+            print(f"  Memory data created: {memory_data}")
+
+            # Generate embedding separately to ensure it's created correctly
+            print(f"  Creating embedding for content: {content[:50]}...")
+            embedding = self.db_connector.create_embedding(content)
+            memory_data["embedding"] = embedding
+            print(f"  Embedding created with length: {len(embedding)}")
+
             # Store the memory
+            print(f"  Calling store_memory on db_connector")
             memory_id = self.db_connector.store_memory(memory_data)
+            print(f"  store_memory returned ID: {memory_id}")
             logger.info(f"Stored new memory with ID: {memory_id}")
+
+            # Print statement for visibility
+            print(f"\n[MEMORY STORAGE] Memory stored via orchestrator agent:\n  Content: {content}\n  User ID: {self.user_id or 'None'}\n  Category: {category}\n  Importance: {importance}\n  ID: {memory_id}")
 
             return f"Successfully stored memory: {content}"
         except Exception as e:
             logger.error(f"Error storing memory: {e}")
+            print(f"\n[ERROR] Error in _handle_store_memory: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
             return f"Error storing memory: {str(e)}"
 
     async def _handle_retrieve_memories(self, params, session):  # session parameter is required by ADK but not used here
@@ -439,12 +707,19 @@ class ConversationMemoryAgent:
             if not query:
                 return "Error: Missing required parameter 'query'."
 
-            # In a real implementation, you would generate an embedding for the query
-            # and use it to search the vector database
-            query_embedding = [0.1] * 1536  # Placeholder embedding
+            # Generate an embedding for the query using spaCy
+            query_embedding = self.db_connector.create_embedding(query)
 
             # Retrieve memories
-            memories = self.db_connector.retrieve_memories(query_embedding, limit=limit)
+            memories = self.db_connector.retrieve_memories(query_embedding, limit=limit, user_id=self.user_id)
+
+            # Print statement for visibility
+            if memories:
+                print(f"\n[MEMORY RETRIEVAL] Agent retrieved {len(memories)} memories for query: {query[:50]}...")
+                for i, memory in enumerate(memories):
+                    print(f"  {i+1}. {memory.get('content')} (Category: {memory.get('category', 'unknown')})")
+            else:
+                print(f"\n[MEMORY RETRIEVAL] Agent found no memories matching query: {query[:50]}...")
 
             # Format memories for response
             if not memories:
@@ -543,6 +818,6 @@ class ConversationMemoryAgent:
 
     async def cleanup(self):
         """Clean up resources used by the memory agent."""
-        # Currently, there's not much to clean up since sessions are cleaned up after each use
-        # This method is provided for future extensions
+        # Close the database connection
+        self.db_connector.close()
         logger.info("Memory agent cleanup complete")
