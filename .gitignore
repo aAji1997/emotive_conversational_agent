@@ -37,3 +37,8 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db 
+
+# Project specific
+gpt_realtime/gpt_transcripts/
+ngram_analysis/
+.env 
