@@ -1259,6 +1259,11 @@ class RealtimeClient:
             m: Manual recording with visual indicators (press Enter to STOP, better for speech detection)
             l: Start continuous listening (stays active until you press Enter)
             r: Reconnect if WebSocket connection was lost
+<<<<<<< Updated upstream
+=======
+            s: Store a memory directly
+            n: Run n-gram analysis on current conversation
+>>>>>>> Stashed changes
             """
         else:  # chat mode
             commands = """
@@ -1424,6 +1429,82 @@ class RealtimeClient:
                     else:
                         print("Failed to reconnect. Please try again.")
 
+<<<<<<< Updated upstream
+=======
+                elif command.lower() == 's':
+                    # Store a memory directly
+                    if not self.enable_memory or not self.memory_integration:
+                        print("Memory system is not enabled.")
+                        continue
+
+                    try:
+                        print("Enter the memory content:")
+                        content = await asyncio.to_thread(input)
+                        if not content.strip():
+                            print("Empty content, not storing.")
+                            continue
+
+                        print("Enter the importance (1-10, default 8):")
+                        importance_str = await asyncio.to_thread(input)
+                        importance = 8
+                        if importance_str.strip():
+                            try:
+                                importance = int(importance_str)
+                                if importance < 1 or importance > 10:
+                                    print("Importance must be between 1 and 10, using default 8.")
+                                    importance = 8
+                            except ValueError:
+                                print("Invalid importance, using default 8.")
+
+                        print("Enter the category (default 'preference'):")
+                        category = await asyncio.to_thread(input)
+                        if not category.strip():
+                            category = "preference"
+
+                        # Store the memory directly
+                        result = await self.memory_integration.store_memory_directly(
+                            content=content,
+                            importance=importance,
+                            category=category
+                        )
+
+                        print(f"Memory storage result: {result}")
+                    except Exception as e:
+                        logger.error(f"Error storing memory directly: {e}")
+                        print(f"Error storing memory: {str(e)}")
+
+                elif command.lower() == 'n':
+                    print("\nRunning n-gram analysis on current conversation...")
+                    try:
+                        # Get the current transcript
+                        current_transcript = self.transcript_processor.get_current_transcript()
+                        if not current_transcript:
+                            print("No conversation to analyze.")
+                            continue
+                        
+                        # Save current transcript to a temporary file
+                        temp_transcript_file = self.transcript_processor.transcripts_dir / f"temp_conversation_{int(time.time())}.txt"
+                        with open(temp_transcript_file, 'w', encoding='utf-8') as f:
+                            f.write(current_transcript)
+                        
+                        # Run n-gram analysis
+                        import subprocess
+                        result = subprocess.run(['python', 'analyze_emotion_ngrams.py'], capture_output=True, text=True)
+                        
+                        if result.returncode == 0:
+                            print("\nN-gram analysis completed successfully!")
+                            print("Check the generated PNG files in the ngram_analysis directory.")
+                        else:
+                            print(f"\nError running n-gram analysis: {result.stderr}")
+                        
+                        # Clean up temporary file
+                        temp_transcript_file.unlink()
+                        
+                    except Exception as e:
+                        logger.error(f"Error running n-gram analysis: {e}")
+                        print(f"\nError: {str(e)}")
+
+>>>>>>> Stashed changes
                 else:
                     print(f"Unknown command: {command}")
                     print(commands)
