@@ -1,0 +1,15 @@
+Complete Conversation Transcript: 20250417_200528
+--------------------------------------------------
+
+User: hello
+
+Assistant: Hello, Samantha! How are you doing today?
+
+User: What do you know about me?
+
+Assistant: Let me see what I know about you. So far, I know your name is Samantha Groves. If there are any specific details or preferences you'd like me to remember for future interactions, feel free to let me know!
+
+User: I'm a software engineer who recently moved to Seattle from Phoenix. I work at a tech startup downtown and I'm still adjusting to the rainy weather here.
+
+Assistant: Thanks for sharing that, Samantha! I'll remember that you're a software engineer who recently moved to Seattle from Phoenix and that you work at a tech startup downtown. It must be quite a change adjusting to the rainy weather after living in Phoenix. If there's anything specific you'd like to talk about regarding your move or work, just let me know!
+

@@ -1,0 +1,226 @@
+[
+  {
+    "timestamp": 1745374058.6840534,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.2,
+      "Fear": 0.6,
+      "Surprise": 0.3,
+      "Sadness": 0.1,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.7
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 0.1,\n  \"Trust\": 0.2,\n  \"Fear\": 0.6,\n  \"Surprise\": 0.3,\n  \"Sadness\": 0.1,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.0,\n  \"Anticipation\": 0.7\n}\n```",
+    "source": "model",
+    "text": "That sounds like the beginning of an intriguing story! It sets a vivid scene with a mix of sensory d..."
+  },
+  {
+    "timestamp": 1745374061.3228033,
+    "emotion_scores": {
+      "Joy": 0.3,
+      "Trust": 0.2,
+      "Fear": 0.6,
+      "Surprise": 0.5,
+      "Sadness": 0.4,
+      "Disgust": 0.1,
+      "Anger": 0.8,
+      "Anticipation": 1.5
+    },
+    "raw_response": "```json\n{\"Joy\": 0.3, \"Trust\": 0.2, \"Fear\": 0.6, \"Surprise\": 0.5, \"Sadness\": 0.4, \"Disgust\": 0.1, \"Anger\": 0.8, \"Anticipation\": 1.5}\n```",
+    "source": "model",
+    "text": "This is a powerful continuation of your story. You've really captured Jared's frustration and betray..."
+  },
+  {
+    "timestamp": 1745374073.0526605,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.6,
+      "Surprise": 0.4,
+      "Sadness": 1.8,
+      "Disgust": 0.8,
+      "Anger": 0.7,
+      "Anticipation": 0.5
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.6, \"Surprise\": 0.4, \"Sadness\": 1.8, \"Disgust\": 0.8, \"Anger\": 0.7, \"Anticipation\": 0.5}\n```",
+    "source": "model",
+    "text": "You're painting a vivid picture of Jared's isolation and the thankless nature of his work environmen..."
+  },
+  {
+    "timestamp": 1745374085.441316,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.6,
+      "Fear": 1.8,
+      "Surprise": 1.3,
+      "Sadness": 0.4,
+      "Disgust": 0.1,
+      "Anger": 1.1,
+      "Anticipation": 2.1
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 0.6, \"Fear\": 1.8, \"Surprise\": 1.3, \"Sadness\": 0.4, \"Disgust\": 0.1, \"Anger\": 1.1, \"Anticipation\": 2.1}\n```",
+    "source": "model",
+    "text": "This is an intense and gripping moment. You've built up Jared's emotions and the tension beautifully..."
+  },
+  {
+    "timestamp": 1745374089.5249856,
+    "emotion_scores": {
+      "Joy": 0.0,
+      "Trust": 0.3,
+      "Fear": 1.2,
+      "Surprise": 0.7,
+      "Sadness": 0.2,
+      "Disgust": 0.1,
+      "Anger": 1.5,
+      "Anticipation": 2.3
+    },
+    "raw_response": "```json\n{\"Joy\": 0.0, \"Trust\": 0.3, \"Fear\": 1.2, \"Surprise\": 0.7, \"Sadness\": 0.2, \"Disgust\": 0.1, \"Anger\": 1.5, \"Anticipation\": 2.3}\n```",
+    "source": "model",
+    "text": "The tension is palpable here, especially with McAllister's defensive smirk. It sets the stage for a ..."
+  },
+  {
+    "timestamp": 1745374093.0985913,
+    "emotion_scores": {
+      "Joy": 0.6,
+      "Trust": 0.4,
+      "Fear": 0.8,
+      "Surprise": 1.2,
+      "Sadness": 0.2,
+      "Disgust": 0.9,
+      "Anger": 1.6,
+      "Anticipation": 1.9
+    },
+    "raw_response": "```json\n{\"Joy\": 0.6, \"Trust\": 0.4, \"Fear\": 0.8, \"Surprise\": 1.2, \"Sadness\": 0.2, \"Disgust\": 0.9, \"Anger\": 1.6, \"Anticipation\": 1.9}\n```",
+    "source": "model",
+    "text": "Jared's response is sharp and biting, perfectly capturing his frustration and disbelief. His line ab..."
+  },
+  {
+    "timestamp": 1745374096.5535347,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.3,
+      "Fear": 0.6,
+      "Surprise": 0.4,
+      "Sadness": 0.5,
+      "Disgust": 0.2,
+      "Anger": 0.9,
+      "Anticipation": 1.6
+    },
+    "raw_response": "```json\n{\"Joy\": 0.1, \"Trust\": 0.3, \"Fear\": 0.6, \"Surprise\": 0.4, \"Sadness\": 0.5, \"Disgust\": 0.2, \"Anger\": 0.9, \"Anticipation\": 1.6}\n```",
+    "source": "model",
+    "text": "McAllister's reaction suggests he's trying to deflect responsibility, which could further frustrate ..."
+  },
+  {
+    "timestamp": 1745374099.488937,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.4,
+      "Fear": 0.3,
+      "Surprise": 1.2,
+      "Sadness": 0.2,
+      "Disgust": 0.1,
+      "Anger": 1.5,
+      "Anticipation": 1.8
+    },
+    "raw_response": "```json\n{\"Joy\": 0.1, \"Trust\": 0.4, \"Fear\": 0.3, \"Surprise\": 1.2, \"Sadness\": 0.2, \"Disgust\": 0.1, \"Anger\": 1.5, \"Anticipation\": 1.8}\n```",
+    "source": "model",
+    "text": "Jared's response is assertive and shows he's not backing down. By pointing out the approval signatur..."
+  },
+  {
+    "timestamp": 1745374103.663477,
+    "emotion_scores": {
+      "Joy": 0.3,
+      "Trust": 0.8,
+      "Fear": 0.6,
+      "Surprise": 1.4,
+      "Sadness": 0.2,
+      "Disgust": 0.1,
+      "Anger": 0.4,
+      "Anticipation": 2.1
+    },
+    "raw_response": "```json\n{\"Joy\": 0.3, \"Trust\": 0.8, \"Fear\": 0.6, \"Surprise\": 1.4, \"Sadness\": 0.2, \"Disgust\": 0.1, \"Anger\": 0.4, \"Anticipation\": 2.1}\n```",
+    "source": "model",
+    "text": "This moment of pause adds an intriguing layer to the confrontation. Whether it's guilt or amusement ..."
+  },
+  {
+    "timestamp": 1745374114.7937517,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.4,
+      "Surprise": 1.1,
+      "Sadness": 0.6,
+      "Disgust": 1.5,
+      "Anger": 1.8,
+      "Anticipation": 2.0
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.4, \"Surprise\": 1.1, \"Sadness\": 0.6, \"Disgust\": 1.5, \"Anger\": 1.8, \"Anticipation\": 2.0}\n```",
+    "source": "model",
+    "text": "Jared's response is cutting and highlights his disdain for the decision-making process. His laughter..."
+  },
+  {
+    "timestamp": 1745374118.2567737,
+    "emotion_scores": {
+      "Joy": 1.3,
+      "Trust": 1.0,
+      "Fear": 0.3,
+      "Surprise": 0.6,
+      "Sadness": 0.7,
+      "Disgust": 0.2,
+      "Anger": 0.9,
+      "Anticipation": 2.1
+    },
+    "raw_response": "```json\n{\"Joy\": 1.3, \"Trust\": 1.0, \"Fear\": 0.3, \"Surprise\": 0.6, \"Sadness\": 0.7, \"Disgust\": 0.2, \"Anger\": 0.9, \"Anticipation\": 2.1}\n```",
+    "source": "model",
+    "text": "This is a powerful declaration from Jared, signaling that he's reached his breaking point and is rea..."
+  },
+  {
+    "timestamp": 1745374121.6385148,
+    "emotion_scores": {
+      "Joy": 2.1,
+      "Trust": 1.8,
+      "Fear": 0.2,
+      "Surprise": 0.9,
+      "Sadness": 0.4,
+      "Disgust": 0.1,
+      "Anger": 0.3,
+      "Anticipation": 2.5
+    },
+    "raw_response": "```json\n{\"Joy\": 2.1, \"Trust\": 1.8, \"Fear\": 0.2, \"Surprise\": 0.9, \"Sadness\": 0.4, \"Disgust\": 0.1, \"Anger\": 0.3, \"Anticipation\": 2.5}\n```",
+    "source": "model",
+    "text": "This is a striking and cinematic exit for Jared, and it beautifully encapsulates his decision to lea..."
+  },
+  {
+    "timestamp": 1745374162.3062816,
+    "emotion_scores": {
+      "Joy": 0.7,
+      "Trust": 1.8,
+      "Fear": 0.1,
+      "Surprise": 0.3,
+      "Sadness": 0.2,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 2.3
+    },
+    "raw_response": "```json\n{\"Joy\": 0.7, \"Trust\": 1.8, \"Fear\": 0.1, \"Surprise\": 0.3, \"Sadness\": 0.2, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 2.3}\n```",
+    "source": "model",
+    "text": "That's a perfect closing image, with the stapler falling as a symbolic end to Jared's time in that e..."
+  },
+  {
+    "timestamp": 1745374166.6691904,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "Okay, I understand. I need the text to analyze. Please provide the text. Once you provide the text, I will return a JSON object in the format you specified, with decimal scores (0.0-3.0) for each of Plutchik's eight core emotions.",
+    "source": "model",
+    "text": "It seems like you might have accidentally repeated the \"q\" there. If there's anything else you'd lik..."
+  }
+]

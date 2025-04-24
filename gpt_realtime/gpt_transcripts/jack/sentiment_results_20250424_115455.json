@@ -1,0 +1,66 @@
+[
+  {
+    "timestamp": 1745459712.6305406,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.3,
+      "Fear": 0.6,
+      "Surprise": 0.2,
+      "Sadness": 2.3,
+      "Disgust": 0.1,
+      "Anger": 0.0,
+      "Anticipation": 0.4
+    },
+    "raw_response": "{\"Joy\": 0.1, \"Trust\": 0.3, \"Fear\": 0.6, \"Surprise\": 0.2, \"Sadness\": 2.3, \"Disgust\": 0.1, \"Anger\": 0.0, \"Anticipation\": 0.4}",
+    "audio_duration_s": 11.818666666666667,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745459716.3825526,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "Okay, I understand. Since there is no text provided, I will assume a neutral emotional state.\n\n```json\n{\n\"Joy\": 0.0,\n\"Trust\": 0.0,\n\"Fear\": 0.0,\n\"Surprise\": 0.0,\n\"Sadness\": 0.0,\n\"Disgust\": 0.0,\n\"Anger\": 0.0,\n\"Anticipation\": 0.0\n}\n```",
+    "source": "model",
+    "text": "It seems like you might be quoting lyrics from a song. If you need help with anything related to tho..."
+  },
+  {
+    "timestamp": 1745459736.8651464,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.8,
+      "Fear": 0.1,
+      "Surprise": 0.0,
+      "Sadness": 1.5,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.1
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.8, \"Fear\": 0.1, \"Surprise\": 0.0, \"Sadness\": 1.5, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.1}",
+    "audio_duration_s": 7.296,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745459744.6581445,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "Okay, I understand. I need the text to analyze first. Please provide the text you want me to analyze according to Plutchik's wheel of emotions. Once you provide the text, I will return a JSON object with the emotional scores as you described.",
+    "source": "model",
+    "text": "It seems like you might be quoting lyrics from a song. If you need help with anything related to tho..."
+  }
+]

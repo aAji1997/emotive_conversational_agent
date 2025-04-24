@@ -1,0 +1,122 @@
+[
+  {
+    "timestamp": 1744787999.6116748,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.333333333333332
+  },
+  {
+    "timestamp": 1744788010.0112238,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 1,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 1,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 1
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 1, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 1, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 1}",
+    "audio_duration_s": 21.290666666666667
+  },
+  {
+    "timestamp": 1744788018.5119195,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.290666666666667
+  },
+  {
+    "timestamp": 1744788031.0151598,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 1
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 1}",
+    "audio_duration_s": 21.248
+  },
+  {
+    "timestamp": 1744788042.4540195,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 1
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 1}",
+    "audio_duration_s": 21.205333333333332
+  },
+  {
+    "timestamp": 1744788052.61093,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 3,
+      "Surprise": 0,
+      "Sadness": 0,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 3, \"Surprise\": 0, \"Sadness\": 0, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.162666666666667
+  },
+  {
+    "timestamp": 1744788062.6763468,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 0,
+      "Surprise": 0,
+      "Sadness": 2,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 0, \"Surprise\": 0, \"Sadness\": 2, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.12
+  },
+  {
+    "timestamp": 1744788074.0288339,
+    "emotion_scores": {
+      "Joy": 0,
+      "Trust": 0,
+      "Fear": 1,
+      "Surprise": 0,
+      "Sadness": 2,
+      "Disgust": 0,
+      "Anger": 0,
+      "Anticipation": 0
+    },
+    "raw_response": "{\"Joy\": 0, \"Trust\": 0, \"Fear\": 1, \"Surprise\": 0, \"Sadness\": 2, \"Disgust\": 0, \"Anger\": 0, \"Anticipation\": 0}",
+    "audio_duration_s": 21.077333333333332
+  }
+]

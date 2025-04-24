@@ -1,0 +1,50 @@
+[
+  {
+    "timestamp": 1745282301.9038887,
+    "emotion_scores": {
+      "Joy": 0.8,
+      "Trust": 2.1,
+      "Fear": 0.0,
+      "Surprise": 0.3,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.5
+    },
+    "raw_response": "```json\n{\"Joy\": 0.8, \"Trust\": 2.1, \"Fear\": 0.0, \"Surprise\": 0.3, \"Sadness\": 0.0, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.5}\n```",
+    "source": "model",
+    "text": "Hello! It sounds like you're reciting the adhan, the Islamic call to prayer. It's a beautiful and si..."
+  },
+  {
+    "timestamp": 1745282308.2974987,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.6,
+      "Surprise": 1.1,
+      "Sadness": 0.4,
+      "Disgust": 0.1,
+      "Anger": 0.2,
+      "Anticipation": 0.8
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.6, \"Surprise\": 1.1, \"Sadness\": 0.4, \"Disgust\": 0.1, \"Anger\": 0.2, \"Anticipation\": 0.8}",
+    "audio_duration_s": 17.28,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745282316.3356788,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.9,
+      "Surprise": 1.1,
+      "Sadness": 1.6,
+      "Disgust": 0.1,
+      "Anger": 0.2,
+      "Anticipation": 0.5
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.9, \"Surprise\": 1.1, \"Sadness\": 1.6, \"Disgust\": 0.1, \"Anger\": 0.2, \"Anticipation\": 0.5}\n```",
+    "audio_duration_s": 9.728,
+    "source": "user"
+  }
+]

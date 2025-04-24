@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": 1745534761.5472593,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 1.3,
+      "Fear": 0.2,
+      "Surprise": 0.3,
+      "Sadness": 0.5,
+      "Disgust": 0.1,
+      "Anger": 0.7,
+      "Anticipation": 1.1
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 0.1,\n  \"Trust\": 1.3,\n  \"Fear\": 0.2,\n  \"Surprise\": 0.3,\n  \"Sadness\": 0.5,\n  \"Disgust\": 0.1,\n  \"Anger\": 0.7,\n  \"Anticipation\": 1.1\n}\n```",
+    "source": "model",
+    "text": "It sounds like you're feeling frustrated or upset. If you want to talk about what's going on, I'm he..."
+  }
+]

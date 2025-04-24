@@ -1,0 +1,82 @@
+[
+  {
+    "timestamp": 1745383263.2162383,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.8,
+      "Surprise": 1.5,
+      "Sadness": 0.6,
+      "Disgust": 0.1,
+      "Anger": 0.2,
+      "Anticipation": 0.4
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.8, \"Surprise\": 1.5, \"Sadness\": 0.6, \"Disgust\": 0.1, \"Anger\": 0.2, \"Anticipation\": 0.4}",
+    "audio_duration_s": 18.090666666666667,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745383301.4766514,
+    "emotion_scores": {
+      "Joy": 0.0,
+      "Trust": 0.0,
+      "Fear": 2.7,
+      "Surprise": 0.2,
+      "Sadness": 0.7,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.1
+    },
+    "raw_response": "```json\n{\"Joy\": 0.0, \"Trust\": 0.0, \"Fear\": 2.7, \"Surprise\": 0.2, \"Sadness\": 0.7, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.1}\n```",
+    "audio_duration_s": 21.333333333333332,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745383305.9375026,
+    "emotion_scores": {
+      "Joy": 1.8,
+      "Trust": 1.2,
+      "Fear": 0.3,
+      "Surprise": 0.6,
+      "Sadness": 0.1,
+      "Disgust": 0.0,
+      "Anger": 0.2,
+      "Anticipation": 1.5
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 1.8,\n  \"Trust\": 1.2,\n  \"Fear\": 0.3,\n  \"Surprise\": 0.6,\n  \"Sadness\": 0.1,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.2,\n  \"Anticipation\": 1.5\n}\n```",
+    "source": "model",
+    "text": "Hello! It sounds like you're greeting me with a bit of a twist. How can I help you today?"
+  },
+  {
+    "timestamp": 1745383309.6705005,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.0,
+      "Surprise": 0.1,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.1
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.0, \"Surprise\": 0.1, \"Sadness\": 0.0, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.1}",
+    "audio_duration_s": 13.696,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745383323.7634125,
+    "emotion_scores": {
+      "Joy": 0.3,
+      "Trust": 0.5,
+      "Fear": 0.2,
+      "Surprise": 2.7,
+      "Sadness": 0.4,
+      "Disgust": 0.1,
+      "Anger": 0.0,
+      "Anticipation": 0.6
+    },
+    "raw_response": "{\"Joy\": 0.3, \"Trust\": 0.5, \"Fear\": 0.2, \"Surprise\": 2.7, \"Sadness\": 0.4, \"Disgust\": 0.1, \"Anger\": 0.0, \"Anticipation\": 0.6}",
+    "audio_duration_s": 14.976,
+    "source": "user"
+  }
+]

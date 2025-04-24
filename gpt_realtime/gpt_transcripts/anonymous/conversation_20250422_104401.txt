@@ -1,0 +1,28 @@
+Complete Conversation Transcript: 20250422_104401
+--------------------------------------------------
+
+--- Speech detected ---
+User: Cue this up.
+
+--- Speech ended ---
+
+Assistant: It sounds like you're feeling a bit down. Do you want to talk about what's on your mind?
+Assistant: It sounds like you're feeling a bit down. Do you want to talk about what's on your mind?
+------------------------------
+
+--- Speech detected ---
+User: Yeah, my account is not working.
+
+--- Speech ended ---
+
+Assistant: I'm sorry to hear you're having trouble with your account. Can you tell me a bit more about what's not working? That way, I can try to help you out.
+------------------------------
+
+--- Speech detected ---
+User: My phone is not working
+
+--- Speech ended ---
+
+Assistant: It sounds like you're having issues with your phone. Let's try to figure it out. Can you describe what's happening with your phone? Is it not turning on, or are you experiencing a different problem?
+------------------------------
+

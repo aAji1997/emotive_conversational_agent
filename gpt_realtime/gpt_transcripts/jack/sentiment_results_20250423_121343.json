@@ -1,0 +1,146 @@
+[
+  {
+    "timestamp": 1745374435.6327212,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.1,
+      "Fear": 0.0,
+      "Surprise": 0.3,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.4
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 0.1, \"Fear\": 0.0, \"Surprise\": 0.3, \"Sadness\": 0.0, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.4}\n```",
+    "source": "model",
+    "text": "It sounds like you're mentioning the classic phrase, \"The quick brown fox jumps over the lazy dog.\" ..."
+  },
+  {
+    "timestamp": 1745374440.673574,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.2,
+      "Fear": 0.4,
+      "Surprise": 0.2,
+      "Sadness": 0.3,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.5
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 0.1,\n  \"Trust\": 0.2,\n  \"Fear\": 0.4,\n  \"Surprise\": 0.2,\n  \"Sadness\": 0.3,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.0,\n  \"Anticipation\": 0.5\n}\n```",
+    "audio_duration_s": 12.928,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745374452.2252653,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 1.3,
+      "Fear": 0.3,
+      "Surprise": 0.1,
+      "Sadness": 0.1,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.6
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 1.3, \"Fear\": 0.3, \"Surprise\": 0.1, \"Sadness\": 0.1, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.6}",
+    "audio_duration_s": 21.290666666666667,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745374459.1846054,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.4,
+      "Fear": 0.0,
+      "Surprise": 0.2,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.3
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 0.1,\n  \"Trust\": 0.4,\n  \"Fear\": 0.0,\n  \"Surprise\": 0.2,\n  \"Sadness\": 0.0,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.0,\n  \"Anticipation\": 0.3\n}\n```",
+    "source": "model",
+    "text": "It sounds like you're mentioning the classic phrase, \"The quick brown fox jumps over the lazy dog.\" ..."
+  },
+  {
+    "timestamp": 1745374462.844863,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.3,
+      "Fear": 0.4,
+      "Surprise": 0.2,
+      "Sadness": 0.3,
+      "Disgust": 0.0,
+      "Anger": 0.1,
+      "Anticipation": 0.6
+    },
+    "raw_response": "{\"Joy\": 0.1, \"Trust\": 0.3, \"Fear\": 0.4, \"Surprise\": 0.2, \"Sadness\": 0.3, \"Disgust\": 0.0, \"Anger\": 0.1, \"Anticipation\": 0.6}",
+    "audio_duration_s": 8.704,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745374474.295625,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.4,
+      "Fear": 1.5,
+      "Surprise": 0.3,
+      "Sadness": 2.3,
+      "Disgust": 0.1,
+      "Anger": 0.2,
+      "Anticipation": 0.6
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.4, \"Fear\": 1.5, \"Surprise\": 0.3, \"Sadness\": 2.3, \"Disgust\": 0.1, \"Anger\": 0.2, \"Anticipation\": 0.6}",
+    "audio_duration_s": 17.92,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745374484.0589616,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.1,
+      "Fear": 2.6,
+      "Surprise": 1.4,
+      "Sadness": 0.8,
+      "Disgust": 0.0,
+      "Anger": 0.1,
+      "Anticipation": 0.4
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.1, \"Fear\": 2.6, \"Surprise\": 1.4, \"Sadness\": 0.8, \"Disgust\": 0.0, \"Anger\": 0.1, \"Anticipation\": 0.4}",
+    "audio_duration_s": 3.712,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745374483.3694646,
+    "emotion_scores": {
+      "Joy": 0.7,
+      "Trust": 1.3,
+      "Fear": 0.1,
+      "Surprise": 0.8,
+      "Sadness": 0.2,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 1.5
+    },
+    "raw_response": "```json\n{\"Joy\": 0.7, \"Trust\": 1.3, \"Fear\": 0.1, \"Surprise\": 0.8, \"Sadness\": 0.2, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 1.5}\n```",
+    "source": "model",
+    "text": "In a literal sense, adding one fox to one tiger gives you two animals, but they are different specie..."
+  },
+  {
+    "timestamp": 1745374494.857365,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.3,
+      "Fear": 0.9,
+      "Surprise": 0.5,
+      "Sadness": 0.3,
+      "Disgust": 0.1,
+      "Anger": 0.1,
+      "Anticipation": 0.4
+    },
+    "raw_response": "{\"Joy\": 0.2, \"Trust\": 0.3, \"Fear\": 0.9, \"Surprise\": 0.5, \"Sadness\": 0.3, \"Disgust\": 0.1, \"Anger\": 0.1, \"Anticipation\": 0.4}",
+    "audio_duration_s": 10.453333333333333,
+    "source": "user"
+  }
+]

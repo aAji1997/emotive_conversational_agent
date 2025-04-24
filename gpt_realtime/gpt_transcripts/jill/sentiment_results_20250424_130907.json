@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": 1745464193.1775272,
+    "emotion_scores": {
+      "Joy": 1.3,
+      "Trust": 1.8,
+      "Fear": 0.0,
+      "Surprise": 0.1,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 1.5
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 1.3,\n  \"Trust\": 1.8,\n  \"Fear\": 0.0,\n  \"Surprise\": 0.1,\n  \"Sadness\": 0.0,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.0,\n  \"Anticipation\": 1.5\n}\n```",
+    "source": "model",
+    "text": "Hello, Jilian! It's great to meet you. Being a pilot sounds like an exciting profession. Do you fly ..."
+  }
+]

@@ -1,0 +1,114 @@
+[
+  {
+    "timestamp": 1745282603.5200872,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 1.3,
+      "Fear": 0.1,
+      "Surprise": 0.2,
+      "Sadness": 1.5,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 0.7
+    },
+    "raw_response": "```json\n{\"Joy\": 0.1, \"Trust\": 1.3, \"Fear\": 0.1, \"Surprise\": 0.2, \"Sadness\": 1.5, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 0.7}\n```",
+    "source": "model",
+    "text": "It sounds like you're feeling a bit down. Do you want to talk about what's on your mind?"
+  },
+  {
+    "timestamp": 1745282615.4028146,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 1.5,
+      "Fear": 0.3,
+      "Surprise": 0.1,
+      "Sadness": 1.2,
+      "Disgust": 0.0,
+      "Anger": 0.1,
+      "Anticipation": 0.8
+    },
+    "raw_response": "```json\n{\"Joy\": 0.2, \"Trust\": 1.5, \"Fear\": 0.3, \"Surprise\": 0.1, \"Sadness\": 1.2, \"Disgust\": 0.0, \"Anger\": 0.1, \"Anticipation\": 0.8}\n```",
+    "source": "model",
+    "text": "It sounds like you're feeling a bit down. Do you want to talk about what's on your mind?"
+  },
+  {
+    "timestamp": 1745282619.1635456,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.2,
+      "Fear": 0.5,
+      "Surprise": 0.8,
+      "Sadness": 2.4,
+      "Disgust": 0.3,
+      "Anger": 1.2,
+      "Anticipation": 0.4
+    },
+    "raw_response": "{\"Joy\": 0.1, \"Trust\": 0.2, \"Fear\": 0.5, \"Surprise\": 0.8, \"Sadness\": 2.4, \"Disgust\": 0.3, \"Anger\": 1.2, \"Anticipation\": 0.4}",
+    "audio_duration_s": 21.290666666666667,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745282627.3257666,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.3,
+      "Fear": 2.5,
+      "Surprise": 2.8,
+      "Sadness": 0.2,
+      "Disgust": 0.0,
+      "Anger": 0.1,
+      "Anticipation": 0.6
+    },
+    "raw_response": "{\"Joy\": 0.1, \"Trust\": 0.3, \"Fear\": 2.5, \"Surprise\": 2.8, \"Sadness\": 0.2, \"Disgust\": 0.0, \"Anger\": 0.1, \"Anticipation\": 0.6}",
+    "audio_duration_s": 1.3226666666666667,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745282633.185856,
+    "emotion_scores": {
+      "Joy": 0.5,
+      "Trust": 2.1,
+      "Fear": 0.2,
+      "Surprise": 0.3,
+      "Sadness": 0.1,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 1.2
+    },
+    "raw_response": "```json\n{\"Joy\": 0.5, \"Trust\": 2.1, \"Fear\": 0.2, \"Surprise\": 0.3, \"Sadness\": 0.1, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 1.2}\n```",
+    "source": "model",
+    "text": "I'm sorry to hear you're having trouble with your account. Can you tell me a bit more about what's n..."
+  },
+  {
+    "timestamp": 1745282638.300439,
+    "emotion_scores": {
+      "Joy": 0.0,
+      "Trust": 0.1,
+      "Fear": 1.8,
+      "Surprise": 0.9,
+      "Sadness": 2.4,
+      "Disgust": 0.2,
+      "Anger": 0.7,
+      "Anticipation": 0.3
+    },
+    "raw_response": "{\"Joy\": 0.0, \"Trust\": 0.1, \"Fear\": 1.8, \"Surprise\": 0.9, \"Sadness\": 2.4, \"Disgust\": 0.2, \"Anger\": 0.7, \"Anticipation\": 0.3}",
+    "audio_duration_s": 5.034666666666666,
+    "source": "user"
+  },
+  {
+    "timestamp": 1745282645.6187887,
+    "emotion_scores": {
+      "Joy": 0.1,
+      "Trust": 0.2,
+      "Fear": 2.5,
+      "Surprise": 2.8,
+      "Sadness": 0.6,
+      "Disgust": 0.0,
+      "Anger": 0.3,
+      "Anticipation": 1.1
+    },
+    "raw_response": "{\"Joy\": 0.1, \"Trust\": 0.2, \"Fear\": 2.5, \"Surprise\": 2.8, \"Sadness\": 0.6, \"Disgust\": 0.0, \"Anger\": 0.3, \"Anticipation\": 1.1}",
+    "audio_duration_s": 12.074666666666667,
+    "source": "user"
+  }
+]

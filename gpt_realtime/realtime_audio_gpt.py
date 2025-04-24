@@ -2543,7 +2543,6 @@ class RealtimeClient:
             l: Start continuous listening (stays active until you press Enter)
             r: Reconnect if WebSocket connection was lost
             s: Store a memory directly
-            n: Run n-gram analysis on current conversation
             """
         else:  # chat mode
             commands = """
@@ -2968,37 +2967,6 @@ class RealtimeClient:
                         logger.error(f"Error storing memory directly: {e}")
                         print(f"Error storing memory: {str(e)}")
 
-                elif command.lower() == 'n':
-                    print("\nRunning n-gram analysis on current conversation...")
-                    try:
-                        # Get the current transcript
-                        current_transcript = self.transcript_processor.get_current_transcript()
-                        if not current_transcript:
-                            print("No conversation to analyze.")
-                            continue
-                        
-                        # Save current transcript to a temporary file
-                        temp_transcript_file = self.transcript_processor.transcripts_dir / f"temp_conversation_{int(time.time())}.txt"
-                        with open(temp_transcript_file, 'w', encoding='utf-8') as f:
-                            f.write(current_transcript)
-                        
-                        # Run n-gram analysis
-                        import subprocess
-                        result = subprocess.run(['python', 'analyze_emotion_ngrams.py'], capture_output=True, text=True)
-                        
-                        if result.returncode == 0:
-                            print("\nN-gram analysis completed successfully!")
-                            print("Check the generated PNG files in the ngram_analysis directory.")
-                        else:
-                            print(f"\nError running n-gram analysis: {result.stderr}")
-                        
-                        # Clean up temporary file
-                        temp_transcript_file.unlink()
-                        
-                    except Exception as e:
-                        logger.error(f"Error running n-gram analysis: {e}")
-                        print(f"\nError: {str(e)}")
-
                 else:
                     print(f"Unknown command: {command}")
                     print(commands)
@@ -3246,13 +3214,19 @@ async def handle_user_account():
         register = input("Would you like to register a new account? (y/n): ").strip().lower()
 
         if register == 'y':
+            # Ask for email address
+            email = input("Email address (required): ").strip()
+            if not email:
+                print("\nEmail address is required for registration. Continuing as anonymous user.")
+                return None, None
+
             # Ask for optional display name
             display_name = input("Display name (optional, press Enter to use username): ").strip()
             if not display_name:
                 display_name = username
 
             # Register the new user
-            user = user_manager.register_user(username=username, display_name=display_name)
+            user = user_manager.register_user(username=username, email=email, display_name=display_name)
 
             if user:
                 print(f"\nAccount created successfully. Welcome, {display_name}!")

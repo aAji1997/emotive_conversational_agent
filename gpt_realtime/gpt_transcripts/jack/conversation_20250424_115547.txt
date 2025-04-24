@@ -1,0 +1,20 @@
+Complete Conversation Transcript: 20250424_115547
+--------------------------------------------------
+
+--- Speech detected ---
+User: पन्धिमा पटुकी पाध्या छैना पन्धिमा
+
+--- Speech ended ---
+
+Assistant: It seems like you might be quoting lyrics from a song. If you need help with anything related to those lyrics or have any other questions, feel free to ask!
+Assistant: It seems like you might be quoting lyrics from a song. If you need help with anything related to those lyrics or have any other questions, feel free to ask!
+------------------------------
+
+--- Speech detected ---
+User: I want to eat some ice cream.
+
+--- Speech ended ---
+
+Assistant: Ice cream sounds like a delicious treat! Do you have a favorite flavor, or are you thinking of trying something new?
+------------------------------
+

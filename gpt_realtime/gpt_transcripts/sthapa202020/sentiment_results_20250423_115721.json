@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": 1745373455.51783,
+    "emotion_scores": {
+      "Joy": 0.3,
+      "Trust": 0.8,
+      "Fear": 0.1,
+      "Surprise": 0.2,
+      "Sadness": 0.1,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 1.1
+    },
+    "raw_response": "```json\n{\"Joy\": 0.3, \"Trust\": 0.8, \"Fear\": 0.1, \"Surprise\": 0.2, \"Sadness\": 0.1, \"Disgust\": 0.0, \"Anger\": 0.0, \"Anticipation\": 1.1}\n```",
+    "source": "model",
+    "text": "\u00a1Hola! Parece que est\u00e1s interesado en aprender sobre algo relacionado con el Congreso. \u00bfHay alg\u00fan as..."
+  }
+]

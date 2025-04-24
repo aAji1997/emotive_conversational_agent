@@ -7,6 +7,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 from supabase import create_client
+import psycopg2
+from dotenv import load_dotenv
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,6 +22,7 @@ class UserAccountManager:
         self.supabase_key = None
         self.supabase_client = None
         self.current_user = None
+        self.pg_connection = None
     
     def load_credentials(self) -> bool:
         """Load Supabase credentials from .api_key.json file."""
@@ -41,16 +44,35 @@ class UserAccountManager:
             return False
     
     def connect(self) -> bool:
-        """Connect to Supabase."""
+        """Connect to Supabase and PostgreSQL."""
         if not self.load_credentials():
             return False
         
         try:
             self.supabase_client = create_client(self.supabase_url, self.supabase_key)
             logger.info("Connected to Supabase successfully")
+            
+            # Also connect to PostgreSQL
+            load_dotenv()
+            pg_user = os.getenv("user")
+            pg_password = os.getenv("password")
+            pg_host = os.getenv("host")
+            pg_port = os.getenv("port")
+            pg_database = os.getenv("dbname")
+            
+            if all([pg_user, pg_password, pg_host, pg_port, pg_database]):
+                self.pg_connection = psycopg2.connect(
+                    user=pg_user,
+                    password=pg_password,
+                    host=pg_host,
+                    port=pg_port,
+                    dbname=pg_database
+                )
+                logger.info("Connected to PostgreSQL successfully")
+            
             return True
         except Exception as e:
-            logger.error(f"Failed to connect to Supabase: {e}")
+            logger.error(f"Failed to connect: {e}")
             return False
     
     def register_user(self, username: str, email: Optional[str] = None, display_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -58,7 +80,7 @@ class UserAccountManager:
         
         Args:
             username: Unique username for the user
-            email: Optional email address
+            email: Email address (required for Supabase auth)
             display_name: Optional display name
             
         Returns:
@@ -75,21 +97,73 @@ class UserAccountManager:
                 logger.error(f"Username '{username}' already exists")
                 return None
             
-            # Create user data
-            user_id = str(uuid.uuid4())
+            # Require email for registration
+            if not email:
+                logger.error("Email address is required for registration")
+                return None
+            
+            # First create the user in Supabase auth
+            try:
+                auth_response = self.supabase_client.auth.sign_up({
+                    "email": email,
+                    "password": str(uuid.uuid4()),  # Generate a random password
+                    "options": {
+                        "data": {
+                            "username": username,
+                            "display_name": display_name or username
+                        }
+                    }
+                })
+                
+                if not auth_response.user:
+                    logger.error("Failed to create user in auth system")
+                    return None
+                
+                user_id = auth_response.user.id
+            except Exception as auth_error:
+                logger.error(f"Auth registration failed: {auth_error}")
+                return None
+            
+            # Create user profile data
             user_data = {
                 'id': user_id,
                 'username': username,
-                'email': email,
                 'display_name': display_name or username,
                 'created_at': datetime.now().isoformat(),
                 'last_login': datetime.now().isoformat(),
                 'preferences': {}
             }
             
-            # Insert user into database
-            self.supabase_client.table('users').insert(user_data).execute()
-            logger.info(f"User registered successfully: {username}")
+            try:
+                # Try Supabase first
+                self.supabase_client.table('user_profiles').insert(user_data).execute()
+                logger.info(f"User registered successfully via Supabase: {username}")
+            except Exception as e:
+                logger.warning(f"Supabase registration failed: {e}")
+                # If Supabase fails, try PostgreSQL
+                if self.pg_connection:
+                    try:
+                        cursor = self.pg_connection.cursor()
+                        cursor.execute("""
+                            INSERT INTO user_profiles (id, username, display_name, created_at, last_login, preferences)
+                            VALUES (%s, %s, %s, %s, %s, %s)
+                        """, (
+                            user_data['id'],
+                            user_data['username'],
+                            user_data['display_name'],
+                            user_data['created_at'],
+                            user_data['last_login'],
+                            json.dumps(user_data['preferences'])
+                        ))
+                        self.pg_connection.commit()
+                        cursor.close()
+                        logger.info(f"User registered successfully via PostgreSQL: {username}")
+                    except Exception as pg_error:
+                        logger.error(f"PostgreSQL registration failed: {pg_error}")
+                        return None
+                else:
+                    logger.error("No PostgreSQL connection available")
+                    return None
             
             # Set as current user
             self.current_user = user_data
@@ -147,7 +221,7 @@ class UserAccountManager:
             return None
         
         try:
-            response = self.supabase_client.table('users').select('*').eq('username', username).execute()
+            response = self.supabase_client.table('user_profiles').select('*').eq('username', username).execute()
             
             if not response.data or len(response.data) == 0:
                 return None

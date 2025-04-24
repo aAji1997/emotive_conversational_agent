@@ -1,0 +1,18 @@
+[
+  {
+    "timestamp": 1745533948.9703083,
+    "emotion_scores": {
+      "Joy": 0.2,
+      "Trust": 0.8,
+      "Fear": 0.1,
+      "Surprise": 0.3,
+      "Sadness": 0.0,
+      "Disgust": 0.0,
+      "Anger": 0.0,
+      "Anticipation": 1.3
+    },
+    "raw_response": "```json\n{\n  \"Joy\": 0.2,\n  \"Trust\": 0.8,\n  \"Fear\": 0.1,\n  \"Surprise\": 0.3,\n  \"Sadness\": 0.0,\n  \"Disgust\": 0.0,\n  \"Anger\": 0.0,\n  \"Anticipation\": 1.3\n}\n```",
+    "source": "model",
+    "text": "Hello! It looks like you typed \"qq.\" How can I assist you today?"
+  }
+]

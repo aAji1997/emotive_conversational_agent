@@ -1,0 +1,20 @@
+Complete Conversation Transcript: 20250416_163536
+--------------------------------------------------
+
+--- Speech detected ---
+User: Hello there.
+
+--- Speech ended ---
+
+Assistant: Hello! How can I help you today?
+Assistant: Hello! How can I help you today?
+------------------------------
+
+--- Speech detected ---
+User: I was wondering how hammerhead sharks, you know those, hunt their prey.
+
+--- Speech ended ---
+
+Assistant: Hammerhead sharks have a unique hunting strategy, which is quite fascinating. Their wide, flat heads, or cephalofoils, have several advantages. They provide enhanced sensory capabilities, as they allow the sharks to detect electric fields produced by prey. This is crucial for hunting in murky waters or during nighttime. Additionally, their wide heads improve maneuverability and help them make sharper turns while chasing prey. Their wide-set eyes also provide better binocular vision, giving them a broader field of view to spot potential prey.
+------------------------------
+

@@ -1,0 +1,11 @@
+Complete Conversation Transcript: 20250417_201343
+--------------------------------------------------
+
+User: hello
+
+Assistant: Hello, Samantha! How are you doing today?
+
+User: I'm a software engineer who recently moved to Seattle from Phoenix. I work at a tech startup downtown and I'm still adjusting to the rainy weather here.
+
+Assistant: Adjusting to Seattle's rainy weather can definitely be a change after living in Phoenix! I'll remember that you're a software engineer at a tech startup downtown. How are you finding the tech scene in Seattle so far?
+
