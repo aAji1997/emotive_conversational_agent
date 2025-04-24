@@ -398,28 +398,247 @@ def plot_emotion_ngrams(emotion_ngrams, emotion_scores, user_folder, top_n=10):
         # Create emotion distribution plot
         plot_emotion_distribution(emotion_scores, output_dir)
 
+def calculate_performance_metrics(sentiment_data):
+    """Calculate various performance metrics from sentiment data."""
+    metrics = {
+        'emotion_intensity': {},
+        'conversation_flow': {},
+        'response_patterns': {},
+        'engagement_metrics': {},
+        'emotion_correlations': {}  # Add this new key
+    }
+    
+    # Emotion Intensity Metrics
+    for emotion in CORE_EMOTIONS:
+        scores = [entry.get('emotion_scores', {}).get(emotion, 0) for entry in sentiment_data]
+        metrics['emotion_intensity'][emotion] = {
+            'mean': np.mean(scores),
+            'max': np.max(scores),
+            'min': np.min(scores),
+            'std': np.std(scores),
+            'total_occurrences': sum(1 for s in scores if s > 0)
+        }
+    
+    # Calculate emotion correlations
+    print("\nCalculating emotion correlations...")
+    emotion_scores = {emotion: [entry.get('emotion_scores', {}).get(emotion, 0) for entry in sentiment_data] 
+                     for emotion in CORE_EMOTIONS}
+    emotion_df = pd.DataFrame(emotion_scores)
+    print(f"Emotion scores DataFrame shape: {emotion_df.shape}")
+    print(f"Emotion scores DataFrame columns: {emotion_df.columns.tolist()}")
+    
+    corr_matrix = emotion_df.corr()
+    print(f"Correlation matrix shape: {corr_matrix.shape}")
+    print(f"Correlation matrix:\n{corr_matrix}")
+    
+    metrics['emotion_correlations'] = corr_matrix.to_dict()
+    print(f"Correlation dictionary keys: {metrics['emotion_correlations'].keys()}")
+    
+    # Conversation Flow Analysis
+    user_messages = [entry for entry in sentiment_data if entry.get('text', '').startswith('User:')]
+    assistant_messages = [entry for entry in sentiment_data if entry.get('text', '').startswith('Assistant:')]
+    
+    metrics['conversation_flow'] = {
+        'total_messages': len(sentiment_data),
+        'user_messages': len(user_messages),
+        'assistant_messages': len(assistant_messages),
+        'avg_user_message_length': np.mean([len(msg.get('text', '').split()) for msg in user_messages]),
+        'avg_assistant_message_length': np.mean([len(msg.get('text', '').split()) for msg in assistant_messages])
+    }
+    
+    # Response Patterns
+    if len(sentiment_data) >= 2:
+        response_times = []
+        for i in range(1, len(sentiment_data)):
+            if sentiment_data[i].get('text', '').startswith('Assistant:') and sentiment_data[i-1].get('text', '').startswith('User:'):
+                response_times.append(sentiment_data[i].get('timestamp', 0) - sentiment_data[i-1].get('timestamp', 0))
+        
+        metrics['response_patterns'] = {
+            'avg_response_time': np.mean(response_times) if response_times else 0,
+            'min_response_time': np.min(response_times) if response_times else 0,
+            'max_response_time': np.max(response_times) if response_times else 0,
+            'response_time_std': np.std(response_times) if response_times else 0,
+            'response_times': response_times  # Add the actual response times for plotting
+        }
+    
+    # Emotion Transition Patterns
+    emotion_transitions = {emotion: [] for emotion in CORE_EMOTIONS}
+    for i in range(1, len(sentiment_data)):
+        prev_emotions = {e: s for e, s in sentiment_data[i-1].get('emotion_scores', {}).items() if s > 0}
+        curr_emotions = {e: s for e, s in sentiment_data[i].get('emotion_scores', {}).items() if s > 0}
+        
+        for emotion in CORE_EMOTIONS:
+            if emotion in prev_emotions and emotion in curr_emotions:
+                emotion_transitions[emotion].append(curr_emotions[emotion] - prev_emotions[emotion])
+    
+    metrics['emotion_transitions'] = {
+        emotion: {
+            'mean_change': np.mean(changes) if changes else 0,
+            'std_change': np.std(changes) if changes else 0,
+            'total_transitions': len(changes)
+        }
+        for emotion, changes in emotion_transitions.items()
+    }
+    
+    # User Engagement Metrics
+    metrics['engagement_metrics'] = {
+        'emotion_diversity': len([e for e in CORE_EMOTIONS if metrics['emotion_intensity'][e]['total_occurrences'] > 0]),
+        'conversation_depth': len(sentiment_data) / max(1, len(user_messages)),
+        'emotional_consistency': np.mean([metrics['emotion_intensity'][e]['std'] for e in CORE_EMOTIONS]),
+        'response_consistency': metrics['response_patterns'].get('response_time_std', 0)
+    }
+    
+    return metrics
+
+def plot_performance_metrics(metrics, output_dir):
+    """Plot performance metrics."""
+    # Create performance metrics directory
+    perf_dir = os.path.join(output_dir, 'performance_metrics')
+    os.makedirs(perf_dir, exist_ok=True)
+    
+    # Plot response times if available
+    if 'response_patterns' in metrics and 'response_times' in metrics['response_patterns']:
+        plt.figure(figsize=(10, 6))
+        plt.hist(metrics['response_patterns']['response_times'], bins=20)
+        plt.title('Response Time Distribution')
+        plt.xlabel('Response Time (seconds)')
+        plt.ylabel('Frequency')
+        plt.savefig(os.path.join(perf_dir, 'response_times.png'))
+        plt.close()
+    
+    # Plot other metrics if available
+    if 'accuracy' in metrics:
+        plt.figure(figsize=(10, 6))
+        plt.bar(['Accuracy'], [metrics['accuracy']])
+        plt.title('Model Accuracy')
+        plt.ylim(0, 1)
+        plt.savefig(os.path.join(perf_dir, 'accuracy.png'))
+        plt.close()
+    
+    if 'precision' in metrics and 'recall' in metrics:
+        plt.figure(figsize=(10, 6))
+        plt.bar(['Precision', 'Recall'], [metrics['precision'], metrics['recall']])
+        plt.title('Precision and Recall')
+        plt.ylim(0, 1)
+        plt.savefig(os.path.join(perf_dir, 'precision_recall.png'))
+        plt.close()
+    
+    # Plot emotion correlations
+    if 'emotion_correlations' in metrics:
+        print("\nPlotting emotion correlations...")
+        print(f"Correlation dictionary keys: {metrics['emotion_correlations'].keys()}")
+        
+        # Convert the correlation dictionary back to a DataFrame
+        corr_df = pd.DataFrame(metrics['emotion_correlations'])
+        print(f"Correlation DataFrame shape: {corr_df.shape}")
+        print(f"Correlation DataFrame:\n{corr_df}")
+        
+        plt.figure(figsize=(12, 10))
+        sns.heatmap(corr_df, 
+                    annot=True, 
+                    cmap='coolwarm', 
+                    center=0,
+                    fmt='.2f',
+                    square=True,
+                    linewidths=.5,
+                    cbar_kws={'shrink': .8})
+        plt.title('Emotion Correlations')
+        plt.tight_layout()
+        plt.savefig(os.path.join(perf_dir, 'emotion_correlations.png'))
+        plt.close()
+        print(f"Saved correlation heatmap to {os.path.join(perf_dir, 'emotion_correlations.png')}")
+
+def display_metrics(metrics):
+    """Display performance metrics in a formatted way in the console."""
+    print("\n=== Performance Metrics ===")
+    
+    print("\n1. Emotion Intensity Metrics:")
+    for emotion in CORE_EMOTIONS:
+        intensity = metrics['emotion_intensity'][emotion]
+        print(f"\n{emotion}:")
+        print(f"  Mean: {intensity['mean']:.2f}")
+        print(f"  Max: {intensity['max']:.2f}")
+        print(f"  Min: {intensity['min']:.2f}")
+        print(f"  Std Dev: {intensity['std']:.2f}")
+        print(f"  Total Occurrences: {intensity['total_occurrences']}")
+    
+    print("\n2. Conversation Flow:")
+    flow = metrics['conversation_flow']
+    print(f"  Total Messages: {flow['total_messages']}")
+    print(f"  User Messages: {flow['user_messages']}")
+    print(f"  Assistant Messages: {flow['assistant_messages']}")
+    print(f"  Avg User Message Length: {flow['avg_user_message_length']:.1f} words")
+    print(f"  Avg Assistant Message Length: {flow['avg_assistant_message_length']:.1f} words")
+    
+    if metrics['response_patterns']:
+        print("\n3. Response Patterns:")
+        response = metrics['response_patterns']
+        print(f"  Avg Response Time: {response['avg_response_time']:.2f} seconds")
+        print(f"  Min Response Time: {response['min_response_time']:.2f} seconds")
+        print(f"  Max Response Time: {response['max_response_time']:.2f} seconds")
+        print(f"  Response Time Std Dev: {response['response_time_std']:.2f} seconds")
+    
+    print("\n4. Emotion Transitions:")
+    for emotion in CORE_EMOTIONS:
+        transition = metrics['emotion_transitions'][emotion]
+        print(f"\n{emotion}:")
+        print(f"  Mean Change: {transition['mean_change']:.2f}")
+        print(f"  Std Dev of Changes: {transition['std_change']:.2f}")
+        print(f"  Total Transitions: {transition['total_transitions']}")
+    
+    print("\n5. User Engagement Metrics:")
+    engagement = metrics['engagement_metrics']
+    print(f"  Emotion Diversity: {engagement['emotion_diversity']} emotions")
+    print(f"  Conversation Depth: {engagement['conversation_depth']:.2f}")
+    print(f"  Emotional Consistency: {engagement['emotional_consistency']:.2f}")
+    print(f"  Response Consistency: {engagement['response_consistency']:.2f}")
+
 def main():
     # Let user select which folder to analyze
     user_folder = select_user_folder()
     if not user_folder:
         return
-        
-    # Load sentiment data for the selected user
+    
+    # Load sentiment data
     sentiment_data = load_sentiment_data(user_folder)
     if not sentiment_data:
         return
-        
-    # Analyze n-grams
+    
+    # Analyze emotion n-grams
     emotion_ngrams, emotion_scores, emotion_vectors = analyze_emotion_ngrams(sentiment_data)
     
-    # Calculate and plot emotion correlations
-    corr_matrix, p_values = calculate_emotion_correlations(emotion_vectors)
-    plot_emotion_correlations(corr_matrix, p_values, Path('ngram_analysis') / user_folder.name)
+    # Calculate performance metrics
+    metrics = calculate_performance_metrics(sentiment_data)
     
-    # Create visualizations
+    # Display metrics in console
+    display_metrics(metrics)
+    
+    # Create output directory
+    output_dir = user_folder / 'analysis_results'
+    output_dir.mkdir(exist_ok=True)
+    
+    # Plot emotion correlations
+    corr_matrix, p_values = calculate_emotion_correlations(emotion_vectors)
+    plot_emotion_correlations(corr_matrix, p_values, output_dir)
+    
+    # Create wordclouds for each emotion
+    for emotion in CORE_EMOTIONS:
+        create_wordcloud(emotion_ngrams, emotion, output_dir)
+    
+    # Plot emotion distribution
+    plot_emotion_distribution(emotion_scores, output_dir)
+    
+    # Plot emotion n-grams
     plot_emotion_ngrams(emotion_ngrams, emotion_scores, user_folder)
     
-    print(f"\nAnalysis complete. Visualizations saved in ngram_analysis/{user_folder.name}/")
+    # Plot performance metrics
+    plot_performance_metrics(metrics, output_dir)
+    
+    # Save metrics to JSON file
+    with open(output_dir / 'performance_metrics.json', 'w') as f:
+        json.dump(metrics, f, indent=4)
+    
+    print(f"\nAnalysis complete. Results saved in: {output_dir}")
 
 if __name__ == "__main__":
     main() 
