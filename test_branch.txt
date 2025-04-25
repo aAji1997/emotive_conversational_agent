@@ -1,0 +1,2 @@
+This is a test file to confirm the troubleshooting-branch is working properly.
+Created for testing purposes without affecting the master branch.
