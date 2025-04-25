@@ -33,7 +33,7 @@ BEGIN
         m.category,
         m.source,
         m.user_id,
-        m.created_at,
+        m.timestamp as created_at,
         m.metadata
     FROM
         memories m
@@ -78,7 +78,7 @@ BEGIN
         m.category,
         m.source,
         m.user_id,
-        m.created_at,
+        m.timestamp as created_at,
         m.metadata
     FROM
         memories m
