@@ -215,6 +215,12 @@ def get_or_create_client(user_id, username=None):
         username=username
     )
 
+    # Initialize memory integration with performance optimization
+    if client.enable_memory and hasattr(client, 'memory_integration') and client.memory_integration:
+        # Set optimize_performance flag to True for better performance
+        client.memory_integration.optimize_performance = True
+        logger.info("Memory performance optimization enabled")
+
     # Define methods directly on the client instance
     async def _send_chat_message_and_get_response(client_self, message):
         """Send a chat message and get the response."""

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class MemoryIntegration:
     """Integration class for the memory agent."""
 
-    def __init__(self, openai_api_key: str, gemini_api_key: str = None, user_id: str = None, supabase_url: str = None, supabase_key: str = None):
+    def __init__(self, openai_api_key: str, gemini_api_key: str = None, user_id: str = None, supabase_url: str = None, supabase_key: str = None, optimize_performance: bool = True):
         """Initialize the memory integration.
 
         Args:
@@ -31,12 +31,18 @@ class MemoryIntegration:
             user_id: Optional user ID for user-specific memories
             supabase_url: Optional Supabase URL for database connection
             supabase_key: Optional Supabase API key for database connection
+            optimize_performance: Whether to optimize performance by reducing unnecessary memory retrievals
         """
         self.openai_api_key = openai_api_key
         self.gemini_api_key = gemini_api_key
         self.user_id = user_id
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
+        self.optimize_performance = optimize_performance
+
+        # Track if we've already retrieved memories for the current message
+        self.last_retrieval_message = None
+        self.last_retrieval_result = []
 
         # Initialize session service
         self.session_service = InMemorySessionService()
@@ -151,6 +157,11 @@ class MemoryIntegration:
             List of relevant memory dictionaries
         """
         try:
+            # Check if we've already retrieved memories for this exact message
+            if self.optimize_performance and self.last_retrieval_message == current_message:
+                print(f"\n[MEMORY INTEGRATION] Using cached memory retrieval results for: '{current_message[:50]}...'")
+                return self.last_retrieval_result
+
             # Check if the message contains phrases indicating memory retrieval intent
             if not force_retrieval:
                 force_retrieval = self._detect_memory_retrieval_intent(current_message)
@@ -164,6 +175,17 @@ class MemoryIntegration:
                 force_retrieval = True
                 print(f"\n[MEMORY INTEGRATION] Location-related query detected, forcing memory retrieval: '{current_message[:50]}...'")
                 logger.info("Location-related query detected, forcing memory retrieval")
+
+            # Skip retrieval for simple messages if performance optimization is enabled
+            if self.optimize_performance and not force_retrieval:
+                # Skip retrieval for simple greetings and acknowledgments
+                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
+                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                    print(f"\n[MEMORY INTEGRATION] Skipping memory retrieval for simple message: '{current_message}'")
+                    logger.info(f"Skipping memory retrieval for simple message: '{current_message}'")
+                    self.last_retrieval_message = current_message
+                    self.last_retrieval_result = []
+                    return []
 
             # Create a dedicated session for this operation
             session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
@@ -186,6 +208,10 @@ class MemoryIntegration:
             else:
                 print(f"\n[MEMORY RETRIEVAL] No memories found for user {self.user_id or 'None'} matching: {current_message[:50]}...")
 
+            # Cache the results for this message
+            self.last_retrieval_message = current_message
+            self.last_retrieval_result = relevant_memories
+
             return relevant_memories
         except Exception as e:
             logger.error(f"Error in centralized memory retrieval: {e}")
@@ -205,6 +231,15 @@ class MemoryIntegration:
             Formatted string of memories for inclusion in the prompt
         """
         try:
+            # Skip memory retrieval for simple messages if performance optimization is enabled
+            if self.optimize_performance and not force_retrieval:
+                # Skip retrieval for simple greetings and acknowledgments
+                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
+                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                    print(f"\n[MEMORY INTEGRATION] Skipping memory context for simple message: '{current_message}'")
+                    logger.info(f"Skipping memory context for simple message: '{current_message}'")
+                    return ""  # Return empty context
+
             # Use the centralized memory retrieval function
             relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
 
@@ -269,8 +304,19 @@ class MemoryIntegration:
             Enhanced messages with memories
         """
         try:
-            # Use the centralized memory retrieval function
+            # Check if this is a message that needs memory retrieval
             force_retrieval = self._detect_memory_retrieval_intent(current_message)
+
+            # Skip memory retrieval for simple messages if performance optimization is enabled
+            if self.optimize_performance and not force_retrieval:
+                # Skip retrieval for simple greetings and acknowledgments
+                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
+                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                    print(f"\n[MEMORY INTEGRATION] Skipping memory enhancement for simple message: '{current_message}'")
+                    logger.info(f"Skipping memory enhancement for simple message: '{current_message}'")
+                    return messages  # Return original messages without enhancement
+
+            # Use the centralized memory retrieval function
             relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
 
             # Print the retrieved memories for debugging
