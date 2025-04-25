@@ -20,17 +20,27 @@ A conversational agent with emotional intelligence using Google's Gemini API and
    }
    ```
 
-3. Install dependencies:
+3. Create a `.env` file in the project root with your database credentials:
+   ```
+   user=your_postgres_user
+   password=your_postgres_password
+   host=your_postgres_host
+   port=your_postgres_port
+   dbname=your_postgres_database
+   ```
+   This file is required for the memory system to work properly.
+
+4. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. Run the application:
+5. Run the application:
    ```bash
    python gpt_realtime/realtime_audio_gpt.py
    ```
 
-The application will automatically set up the database and memory system on first run.
+The application will attempt to set up the database tables and functions on first run, but both the `.api_key.json` and `.env` files are required.
 
 ## Detailed Setup
 
@@ -58,9 +68,14 @@ If you prefer manual setup or encounter issues, you can:
    python supabase/verify_database.py
    ```
 
-### Optional: Direct Database Connection
+### Database Connection Requirements
 
-For advanced features, you can create a `.env` file with direct PostgreSQL connection details:
+The memory system requires both Supabase API access and direct PostgreSQL connection:
+
+1. **Supabase API** (via `.api_key.json`): Used for vector similarity searches and some database operations
+2. **Direct PostgreSQL** (via `.env`): Used for database initialization, memory storage, and advanced features
+
+Both connection methods are required for the application to function properly. The `.env` file must contain:
 ```
 user=your_postgres_user
 password=your_postgres_password
@@ -68,7 +83,6 @@ host=your_postgres_host
 port=your_postgres_port
 dbname=your_postgres_database
 ```
-This is optional for most users as the application primarily uses the Supabase API.
 
 ## Features
 
@@ -129,11 +143,12 @@ This application includes a memory system that stores and retrieves user interac
 
 ### Memory System Setup
 
-The memory system is now **automatically initialized** when you run the application. All you need is:
+The memory system attempts to initialize automatically when you run the application, but requires:
 
-- Supabase credentials in your `.api_key.json` file
+1. Supabase credentials in your `.api_key.json` file
+2. PostgreSQL connection details in your `.env` file
 
-The direct PostgreSQL connection via `.env` is now optional for most users.
+Both files are mandatory for the memory system to function properly.
 
 ### Troubleshooting
 
