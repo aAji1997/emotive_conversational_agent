@@ -1,140 +1,124 @@
-# Supabase Memory System Setup Instructions
+# Supabase Database Setup Instructions
 
-The initialization script encountered some issues with executing SQL statements directly through the API. Follow these manual steps to set up your Supabase database for the memory system.
+This document provides detailed instructions for setting up the Supabase database for the memory system. These instructions are designed to ensure a consistent setup across all collaborators.
 
-## Step 1: Access the Supabase SQL Editor
+## Automatic Setup (Recommended)
+
+The application now includes an automatic database initialization process that runs when you start the application. This should handle all the necessary setup for you.
+
+1. Make sure you have a valid `.api_key.json` file with your Supabase credentials:
+   ```json
+   {
+     "openai_api_key": "your-openai-api-key",
+     "gemini_api_key": "your-gemini-api-key",
+     "supabase_url": "your-supabase-url",
+     "supabase_api_key": "your-supabase-api-key"
+   }
+   ```
+
+2. Run the application normally:
+   ```
+   python gpt_realtime/realtime_audio_gpt.py
+   ```
+
+3. The application will automatically initialize the database with the correct schema and functions.
+
+## Manual Setup
+
+If you encounter issues with the automatic setup, you can run the initialization script manually:
+
+```
+python supabase/initialize_database.py
+```
+
+This script will:
+1. Create the necessary tables if they don't exist
+2. Create the required SQL functions
+3. Handle any schema migrations (e.g., if you have a `created_at` column but need a `timestamp` column)
+4. Verify that everything is set up correctly
+
+## Verifying Your Setup
+
+You can verify that your database is set up correctly by running:
+
+```
+python supabase/verify_database.py
+```
+
+This will check:
+- If all required tables exist
+- If all required columns exist in the tables
+- If all required functions exist and have the correct signatures
+- If the functions can be executed successfully
+
+If any issues are found, the script will provide recommendations for fixing them.
+
+## Common Issues and Solutions
+
+### "column m.created_at does not exist" Error
+
+This error occurs when the SQL functions are trying to access a column that doesn't exist in your database. The solution is to run the database initialization script, which will update the functions to use the correct column names.
+
+```
+python supabase/initialize_database.py
+```
+
+### Schema Inconsistencies
+
+If you're experiencing issues due to schema inconsistencies (e.g., some collaborators have a `created_at` column while others have a `timestamp` column), the initialization script includes a migration function that will handle these differences.
+
+### Manual SQL Execution
+
+If you need to manually execute the SQL setup script, you can do so through the Supabase dashboard:
 
 1. Go to the [Supabase Dashboard](https://app.supabase.com/)
 2. Select your project
 3. Click on "SQL Editor" in the left sidebar
 4. Click "New Query" to create a new SQL query
+5. Copy and paste the contents of `supabase/standard_schema.sql`
+6. Click "Run" to execute the SQL
 
-## Step 2: Enable the pgvector Extension
+## Database Schema
 
-Run the following SQL command:
+The memory system uses the following tables:
 
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
+### `users` Table
+- `id`: TEXT PRIMARY KEY
+- `username`: TEXT UNIQUE NOT NULL
+- `email`: TEXT UNIQUE
+- `display_name`: TEXT
+- `created_at`: TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- `last_login`: TIMESTAMPTZ
+- `preferences`: JSONB DEFAULT '{}'::JSONB
 
-## Step 3: Create the Memories Table
+### `memories` Table
+- `id`: TEXT PRIMARY KEY
+- `content`: TEXT NOT NULL
+- `embedding`: VECTOR(300)
+- `importance`: INTEGER CHECK (importance >= 1 AND importance <= 10)
+- `category`: TEXT NOT NULL
+- `timestamp`: TIMESTAMPTZ NOT NULL
+- `source`: TEXT
+- `conversation_mode`: TEXT
+- `user_id`: TEXT REFERENCES users(id)
+- `metadata`: JSONB DEFAULT '{}'::JSONB
 
-Run the following SQL command:
+## SQL Functions
 
-```sql
-CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    content TEXT NOT NULL,
-    embedding VECTOR(300), -- Using 300 dimensions for spaCy's en_core_web_md model
-    importance INTEGER CHECK (importance >= 1 AND importance <= 10),
-    category TEXT NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
-    source TEXT,
-    conversation_mode TEXT,
-    metadata JSONB DEFAULT '{}'::JSONB
-);
-```
+The memory system uses the following SQL functions:
 
-## Step 4: Create an Index for Vector Similarity Search
+### `match_memories`
+Matches memories based on vector similarity.
 
-Run the following SQL command:
+### `match_memories_by_user`
+Matches memories based on vector similarity and user ID.
 
-```sql
-CREATE INDEX IF NOT EXISTS memories_embedding_idx ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-```
+### `clear_all_memories`
+Clears all memories from the database (for testing/reset purposes).
 
-## Step 5: Create the Match Memories Function
+### `check_and_migrate_schema`
+Handles schema migrations between different versions of the database.
 
-Run the following SQL command:
+## Support
 
-```sql
-CREATE OR REPLACE FUNCTION match_memories(
-    query_embedding VECTOR(300),
-    match_threshold FLOAT,
-    match_count INT
-)
-RETURNS TABLE (
-    id TEXT,
-    content TEXT,
-    importance INTEGER,
-    category TEXT,
-    timestamp TIMESTAMPTZ,
-    source TEXT,
-    conversation_mode TEXT,
-    metadata JSONB,
-    similarity FLOAT
-)
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    RETURN QUERY
-    SELECT
-        m.id,
-        m.content,
-        m.importance,
-        m.category,
-        m.timestamp,
-        m.source,
-        m.conversation_mode,
-        m.metadata,
-        1 - (m.embedding <=> query_embedding) AS similarity
-    FROM
-        memories m
-    WHERE
-        1 - (m.embedding <=> query_embedding) > match_threshold
-    ORDER BY
-        m.embedding <=> query_embedding
-    LIMIT
-        match_count;
-END;
-$$;
-```
-
-## Step 6: Create a Function to Clear All Memories
-
-Run the following SQL command:
-
-```sql
-CREATE OR REPLACE FUNCTION clear_all_memories()
-RETURNS VOID
-LANGUAGE plpgsql
-AS $$
-BEGIN
-    DELETE FROM memories;
-END;
-$$;
-```
-
-## Step 7: Verify the Setup
-
-After executing all the SQL commands, you can verify the setup by running:
-
-```sql
-SELECT * FROM memories LIMIT 10;
-```
-
-This should return an empty result set (since no memories have been added yet), but without any errors.
-
-## Step 8: Test the Memory System
-
-Run the memory initialization script again to test the system:
-
-```bash
-python initialize_memory_system.py
-```
-
-Or use the memory utilities to add and retrieve memories:
-
-```bash
-python memory_utils.py add --content "This is a test memory" --importance 5 --category "test"
-python memory_utils.py list
-```
-
-## Troubleshooting
-
-If you encounter any issues:
-
-1. Check that the pgvector extension is enabled
-2. Verify that all tables and functions were created successfully
-3. Ensure your Supabase API key has the necessary permissions
-4. Check the Supabase logs for any error messages
+If you continue to experience issues with the database setup, please contact the project maintainers for assistance.
