@@ -30,12 +30,32 @@ A conversational agent with emotional intelligence using Google's Gemini API and
    ```
    This file is required for the memory system to work properly.
 
-4. Install dependencies:
+4. Install Python dependencies:
    ```bash
    pip install -r requirements.txt
    ```
 
-5. Run the application:
+5. Initialize the frontend submodule and install Node.js dependencies:
+   ```bash
+   git submodule update --init --recursive
+   cd frontend
+   npm install
+   cd ..
+   ```
+
+6. Run the application (UI version):
+   ```bash
+   # Terminal 1: Start the API server
+   python api_server.py
+
+   # Terminal 2: Start the frontend
+   cd frontend
+   npm run dev
+   ```
+
+   Then open your browser to http://localhost:3000
+
+   Alternatively, you can run the CLI version:
    ```bash
    python gpt_realtime/realtime_audio_gpt.py
    ```
@@ -87,20 +107,71 @@ dbname=your_postgres_database
 ## Features
 
 - AI-powered conversations using OpenAI's GPT and Google's Gemini models
+- Modern React-based UI with both chat and voice conversation modes
+- User account system with personalized experiences
+- Plutchik's wheel of emotions for real-time emotion visualization
 - Emotion detection and realtime emotion analysis
 - Natural language understanding
+- Long-term memory with semantic search capabilities
 
 ## Technologies
 
-- Python
+- Python for backend processing and API server
+- React.js for the frontend user interface
+- Flask and Socket.IO for real-time communication between frontend and backend
 - OpenAI real-time API for real-time audio conversations
 - Google Gemini API and Google ADK for sentiment analysis and report generation
+- Supabase with pgvector for memory storage and semantic search
+- Node.js and npm for frontend development
 
 ## Running the Application
 
-### Audio Conversation Mode (Recommended)
+### UI Version (Recommended)
 
-The primary application uses OpenAI's real-time audio API for natural voice conversations:
+The application now includes a React-based UI that provides a more user-friendly interface with both chat and voice conversation modes.
+
+#### Prerequisites
+
+- Node.js and npm installed on your system
+- All API keys and database configuration as described above
+
+#### Setup and Run
+
+1. Initialize the frontend submodule (first time only):
+   ```bash
+   git submodule update --init --recursive
+   ```
+
+2. Install frontend dependencies:
+   ```bash
+   cd frontend
+   npm install
+   cd ..
+   ```
+
+3. Start the API server:
+   ```bash
+   python api_server.py
+   ```
+
+4. In a separate terminal, start the frontend development server:
+   ```bash
+   cd frontend
+   npm run dev
+   ```
+
+5. Open your browser and navigate to http://localhost:3000
+
+The UI version includes:
+- User login screen
+- Text chat interface
+- Real-time voice conversation with microphone support
+- Plutchik's wheel of emotions visualization
+- Memory integration with previous conversations
+
+### CLI Audio Conversation Mode
+
+The original command-line application uses OpenAI's real-time audio API for natural voice conversations:
 
 ```bash
 python gpt_realtime/realtime_audio_gpt.py
@@ -114,7 +185,7 @@ This will:
 
 ### Command Line Arguments
 
-The application supports several command line arguments:
+The CLI application supports several command line arguments:
 
 ```bash
 python gpt_realtime/realtime_audio_gpt.py --chat-mode --no-memory --no-sentiment
