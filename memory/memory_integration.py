@@ -150,10 +150,27 @@ class MemoryIntegration:
             message: The user's message
             conversation_mode: 'audio' or 'chat'
         """
+        # Quick check to see if this message is worth processing
+        if len(message.strip()) < 5 or (self.optimize_performance and self.is_simple_message(message)):
+            logger.info(f"Skipping memory processing for simple user message: '{message[:50]}...'")
+            return
+
         print(f"\n[MEMORY AGENT] Processing user message in {conversation_mode} mode: '{message[:50]}...'")
         logger.info(f"Processing user message in {conversation_mode} mode")
-        await self.memory_agent.process_message(message, "user", conversation_mode)
-        print(f"\n[MEMORY AGENT] Finished processing user message in {conversation_mode} mode")
+
+        try:
+            # Set a timeout for the process_message call
+            process_task = asyncio.create_task(
+                self.memory_agent.process_message(message, "user", conversation_mode)
+            )
+            await asyncio.wait_for(process_task, timeout=5.0)  # 5 second timeout
+            print(f"\n[MEMORY AGENT] Finished processing user message in {conversation_mode} mode")
+        except asyncio.TimeoutError:
+            logger.warning(f"User message processing timed out after 5 seconds")
+            print(f"\n[MEMORY AGENT] User message processing timed out")
+        except Exception as e:
+            logger.error(f"Error processing user message: {e}")
+            print(f"\n[MEMORY AGENT] Error processing user message: {e}")
 
     async def process_assistant_message(self, message: str, conversation_mode: str) -> None:
         """Process an assistant message and store it in memory if relevant.
@@ -162,42 +179,78 @@ class MemoryIntegration:
             message: The assistant's message
             conversation_mode: 'audio' or 'chat'
         """
+        # Quick check to see if this message is worth processing
+        if len(message.strip()) < 5:
+            logger.info(f"Skipping memory processing for short assistant message")
+            return
+
         print(f"\n[MEMORY AGENT] Processing assistant message in {conversation_mode} mode: '{message[:50]}...'")
         logger.info(f"Processing assistant message in {conversation_mode} mode")
 
-        # Check if the message contains phrases indicating memory storage or retrieval intent
-        storage_intent = self._detect_memory_storage_intent(message)
-        retrieval_intent = self._detect_memory_retrieval_intent(message)
+        try:
+            # Check if the message contains phrases indicating memory storage or retrieval intent
+            # This is a fast operation so we do it synchronously
+            storage_intent = self._detect_memory_storage_intent(message)
+            retrieval_intent = self._detect_memory_retrieval_intent(message)
 
-        # Process the message with the memory agent
-        if storage_intent:
-            # If storage intent is detected, use a special flag to prioritize storage
-            print(f"\n[MEMORY AGENT] Detected memory storage intent in assistant message")
-            await self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_consideration=True)
-            logger.info("Detected memory storage intent in assistant message")
-        elif retrieval_intent:
-            # If retrieval intent is detected, use a special flag to prioritize retrieval
-            print(f"\n[MEMORY AGENT] Detected memory retrieval intent in assistant message")
-            await self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_retrieval=True)
-            logger.info("Detected memory retrieval intent in assistant message")
-        else:
-            # Normal processing
-            print(f"\n[MEMORY AGENT] No specific intent detected, processing normally")
-            await self.memory_agent.process_message(message, "assistant", conversation_mode)
+            # Create a task for the process_message call with a timeout
+            process_task = None
 
-        print(f"\n[MEMORY AGENT] Finished processing assistant message in {conversation_mode} mode")
+            # Process the message with the memory agent
+            if storage_intent:
+                # If storage intent is detected, use a special flag to prioritize storage
+                print(f"\n[MEMORY AGENT] Detected memory storage intent in assistant message")
+                process_task = asyncio.create_task(
+                    self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_consideration=True)
+                )
+                logger.info("Detected memory storage intent in assistant message")
+            elif retrieval_intent:
+                # If retrieval intent is detected, use a special flag to prioritize retrieval
+                print(f"\n[MEMORY AGENT] Detected memory retrieval intent in assistant message")
+                process_task = asyncio.create_task(
+                    self.memory_agent.process_message(message, "assistant", conversation_mode, force_memory_retrieval=True)
+                )
+                logger.info("Detected memory retrieval intent in assistant message")
+            else:
+                # For normal processing, only process if not a simple message
+                if not (self.optimize_performance and self.is_simple_message(message)):
+                    print(f"\n[MEMORY AGENT] No specific intent detected, processing normally")
+                    process_task = asyncio.create_task(
+                        self.memory_agent.process_message(message, "assistant", conversation_mode)
+                    )
+                else:
+                    print(f"\n[MEMORY AGENT] Skipping memory processing for simple assistant message")
+                    return
 
-    async def _centralized_memory_retrieval(self, current_message: str, force_retrieval: bool = False) -> List[Dict[str, Any]]:
+            # Wait for the task with a timeout if it was created
+            if process_task:
+                await asyncio.wait_for(process_task, timeout=5.0)  # 5 second timeout
+                print(f"\n[MEMORY AGENT] Finished processing assistant message in {conversation_mode} mode")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Assistant message processing timed out after 5 seconds")
+            print(f"\n[MEMORY AGENT] Assistant message processing timed out")
+        except Exception as e:
+            logger.error(f"Error processing assistant message: {e}")
+            print(f"\n[MEMORY AGENT] Error processing assistant message: {e}")
+
+    async def _centralized_memory_retrieval(self, current_message: str, force_retrieval: bool = False, timeout: float = 5.0) -> List[Dict[str, Any]]:
         """Centralized function for retrieving memories to avoid redundant calls.
 
         Args:
             current_message: The current message to find relevant memories for
             force_retrieval: If True, prioritize memory retrieval
+            timeout: Maximum time in seconds to wait for memory retrieval
 
         Returns:
             List of relevant memory dictionaries
         """
         try:
+            # Quick check for very short messages to avoid unnecessary processing
+            if len(current_message.strip()) < 5 and not force_retrieval:
+                logger.info("Message too short for memory retrieval, skipping")
+                return []
+
             # Check if we've already retrieved memories for this exact message
             if self.optimize_performance and self.last_retrieval_message == current_message:
                 print(f"\n[MEMORY INTEGRATION] Using cached memory retrieval results for: '{current_message[:50]}...'")
@@ -236,32 +289,48 @@ class MemoryIntegration:
                     self.last_retrieval_result = []
                     return []
 
-            # Create a dedicated session for this operation
-            session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
+            # Create a task for memory retrieval with timeout
+            try:
+                # Create a dedicated session for this operation
+                session = self.session_service.create_session(app_name="memory_agent", user_id=self.user_id or "test_user")
 
-            # Store the current message in the session for context
-            session.state["current_message"] = current_message
-            session.state["force_memory_retrieval"] = force_retrieval
+                # Store the current message in the session for context
+                session.state["current_message"] = current_message
+                session.state["force_memory_retrieval"] = force_retrieval
 
-            # Get relevant memories using the memory agent with optimized retrieval
-            print(f"\n[MEMORY INTEGRATION] Getting relevant memories for: '{current_message[:50]}...'")
-            relevant_memories = await self.memory_agent.get_relevant_memories(current_message, force_retrieval)
+                # Create a task for memory retrieval
+                retrieval_task = asyncio.create_task(
+                    self.memory_agent.get_relevant_memories(current_message, force_retrieval)
+                )
 
-            logger.info(f"Retrieved {len(relevant_memories)} memories for context")
+                # Wait for the task with a timeout
+                print(f"\n[MEMORY INTEGRATION] Getting relevant memories with {timeout}s timeout: '{current_message[:50]}...'")
+                relevant_memories = await asyncio.wait_for(retrieval_task, timeout=timeout)
 
-            # Print statement for visibility
-            if relevant_memories:
-                print(f"\n[MEMORY RETRIEVAL] Retrieved {len(relevant_memories)} memories for user {self.user_id or 'None'}:")
-                for i, memory in enumerate(relevant_memories):
-                    print(f"  {i+1}. {memory.get('content')} (Category: {memory.get('category', 'unknown')})")
-            else:
-                print(f"\n[MEMORY RETRIEVAL] No memories found for user {self.user_id or 'None'} matching: {current_message[:50]}...")
+                logger.info(f"Retrieved {len(relevant_memories)} memories for context")
 
-            # Cache the results for this message
-            self.last_retrieval_message = current_message
-            self.last_retrieval_result = relevant_memories
+                # Print statement for visibility (reduced verbosity)
+                if relevant_memories:
+                    print(f"\n[MEMORY RETRIEVAL] Retrieved {len(relevant_memories)} memories for user {self.user_id or 'None'}")
+                    # Only print first 2 memories to reduce console spam
+                    for i, memory in enumerate(relevant_memories[:2]):
+                        print(f"  {i+1}. {memory.get('content')} (Category: {memory.get('category', 'unknown')})")
+                    if len(relevant_memories) > 2:
+                        print(f"  ... and {len(relevant_memories) - 2} more memories")
+                else:
+                    print(f"\n[MEMORY RETRIEVAL] No memories found for user {self.user_id or 'None'}")
 
-            return relevant_memories
+                # Cache the results for this message
+                self.last_retrieval_message = current_message
+                self.last_retrieval_result = relevant_memories
+
+                return relevant_memories
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Memory retrieval timed out after {timeout} seconds")
+                print(f"\n[MEMORY INTEGRATION] Memory retrieval timed out after {timeout} seconds")
+                return []  # Return empty list on timeout
+
         except Exception as e:
             logger.error(f"Error in centralized memory retrieval: {e}")
             print(f"\n[MEMORY INTEGRATION] Error in centralized memory retrieval: {e}")
@@ -367,6 +436,11 @@ class MemoryIntegration:
             Enhanced messages with memories
         """
         try:
+            # Quick check for very short messages to avoid unnecessary processing
+            if len(current_message.strip()) < 5:
+                logger.info("Message too short for memory enhancement, skipping")
+                return messages
+
             # Check if this is a message that needs memory retrieval
             force_retrieval = self._detect_memory_retrieval_intent(current_message)
 
@@ -377,7 +451,6 @@ class MemoryIntegration:
                 is_location_query = any(term in current_message.lower() for term in location_terms)
 
                 if not is_location_query:
-                    print(f"\n[MEMORY INTEGRATION] Strict intent detection enabled - skipping memory retrieval for: '{current_message}'")
                     logger.info(f"Strict intent detection enabled - skipping memory retrieval")
                     return messages  # Return original messages without enhancement
 
@@ -385,68 +458,59 @@ class MemoryIntegration:
             if self.optimize_performance and not force_retrieval:
                 # Use the helper method to check if this is a simple message
                 if self.is_simple_message(current_message, force_retrieval):
-                    print(f"\n[MEMORY INTEGRATION] Skipping memory enhancement for simple message: '{current_message}'")
-                    logger.info(f"Skipping memory enhancement for simple message: '{current_message}'")
+                    logger.info(f"Skipping memory enhancement for simple message")
                     return messages  # Return original messages without enhancement
 
-            # Use the centralized memory retrieval function
-            relevant_memories = await self._centralized_memory_retrieval(current_message, force_retrieval)
+            # Use the centralized memory retrieval function with a shorter timeout for UI responsiveness
+            try:
+                # Create a task for memory retrieval
+                retrieval_task = asyncio.create_task(
+                    self._centralized_memory_retrieval(current_message, force_retrieval, timeout=5.0)
+                )
 
-            # Print the retrieved memories for debugging
-            print(f"\n[MEMORY INTEGRATION] Retrieved {len(relevant_memories)} memories for message: '{current_message[:50]}...'")
-            for i, memory in enumerate(relevant_memories):
-                print(f"  Memory {i+1}: {memory.get('content', 'No content')} (ID: {memory.get('id', 'unknown')})")
+                # Wait for the task with a timeout
+                relevant_memories = await asyncio.wait_for(retrieval_task, timeout=5.0)  # 5 second timeout for complex memory retrieval
 
-            # Format memories for context, indicating if retrieval was explicitly attempted
-            memory_context = self.memory_agent.format_memories_for_context(relevant_memories, retrieval_attempted=force_retrieval)
+                # If no memories were found, return original messages
+                if not relevant_memories:
+                    return messages
 
-            # Print the formatted memory context for debugging
-            print(f"\n[MEMORY INTEGRATION] Formatted memory context:\n{memory_context}")
+                # Format memories for context, indicating if retrieval was explicitly attempted
+                memory_context = self.memory_agent.format_memories_for_context(relevant_memories, retrieval_attempted=force_retrieval)
 
-            if not memory_context:
-                print(f"\n[MEMORY INTEGRATION] No memory context to add to messages")
-                return messages  # Return original messages if no memories
+                if not memory_context:
+                    return messages  # Return original messages if no formatted context
 
-            # Create a new system message with memories or enhance existing one
-            system_message_exists = False
-            enhanced_messages = []
+                # Create a new system message with memories or enhance existing one
+                system_message_exists = False
+                enhanced_messages = []
 
-            for message in messages:
-                if message["role"] == "system":
-                    # Enhance existing system message
-                    enhanced_content = f"{message['content']}\n\n{memory_context}"
-                    message["content"] = enhanced_content
-                    system_message_exists = True
-                    print(f"\n[MEMORY INTEGRATION] Enhanced existing system message with memories")
-                enhanced_messages.append(message)
+                for message in messages:
+                    if message["role"] == "system":
+                        # Enhance existing system message
+                        enhanced_content = f"{message['content']}\n\n{memory_context}"
+                        message["content"] = enhanced_content
+                        system_message_exists = True
+                    enhanced_messages.append(message)
 
-            # Add a new system message with memories if none exists
-            if not system_message_exists:
-                memory_system_message = {
-                    "role": "system",
-                    "content": f"You are a helpful assistant with access to the user's previous conversations.\n\n{memory_context}"
-                }
-                enhanced_messages.insert(0, memory_system_message)
-                print(f"\n[MEMORY INTEGRATION] Added new system message with memories")
+                # Add a new system message with memories if none exists
+                if not system_message_exists:
+                    memory_system_message = {
+                        "role": "system",
+                        "content": f"You are a helpful assistant with access to the user's previous conversations.\n\n{memory_context}"
+                    }
+                    enhanced_messages.insert(0, memory_system_message)
 
-            # Print the final enhanced messages for debugging
-            print(f"\n[MEMORY INTEGRATION] Final enhanced messages:")
-            for i, msg in enumerate(enhanced_messages):
-                if msg["role"] == "system":
-                    print(f"  System message: {msg['content'][:100]}...")
+                logger.info(f"Enhanced chat messages with {len(relevant_memories)} memories")
+                return enhanced_messages
 
-            logger.info("Enhanced chat messages with memory context")
-            return enhanced_messages
+            except asyncio.TimeoutError:
+                logger.warning("Memory enhancement timed out, returning original messages")
+                return messages  # Return original messages on timeout
+
         except Exception as e:
             logger.error(f"Error enhancing chat messages with memories: {e}")
-            print(f"\n[MEMORY INTEGRATION] Error enhancing chat messages: {e}")
-            import traceback
-            print(f"  Traceback: {traceback.format_exc()}")
             return messages  # Return original messages on error
-        finally:
-            # Clean up the session
-            # No need to explicitly close ADK sessions
-            pass
 
     def _detect_memory_storage_intent(self, message: str) -> bool:
         """Detect phrases in the assistant's message that indicate an intent to store a memory.
