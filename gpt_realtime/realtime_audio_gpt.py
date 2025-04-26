@@ -265,11 +265,14 @@ class RealtimeClient:
              if enable_sentiment_analysis: # Log if it was requested but couldn't be enabled
                  logger.warning("Sentiment analysis was requested but could not be enabled (check imports/API key).")
 
-    async def connect(self):
-        """Connect to the WebSocket server."""
-        # logger.info(f"Connecting to WebSocket: {self.url}")
+    async def pre_initialize(self):
+        """Pre-initialize components to reduce lag on first message.
+        This method warms up API connections and initializes memory systems.
+        """
+        print("\n=== Pre-initializing system components ===")
 
         # Start the transcript processor
+        print("Initializing transcript processor...")
         self.transcript_processor.start()
 
         # Log the transcript directory for user information
@@ -278,6 +281,50 @@ class RealtimeClient:
         else:
             print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
 
+        # Pre-warm OpenAI API connection with a minimal request
+        if self.api_key:
+            try:
+                print("Pre-warming OpenAI API connection...")
+                # Make a minimal API call to warm up the connection
+                self.openai_client.embeddings.create(
+                    model="text-embedding-3-small",
+                    input="Hello",
+                    dimensions=1
+                )
+                print("OpenAI API connection established successfully.")
+            except Exception as e:
+                logger.warning(f"Failed to pre-warm OpenAI API connection: {e}")
+                print(f"Note: OpenAI API pre-warming failed, but this won't affect functionality.")
+
+        # Pre-initialize memory system if enabled
+        if self.enable_memory and self.memory_integration:
+            try:
+                print("Pre-initializing memory system...")
+                # Perform a dummy memory retrieval to warm up the system
+                dummy_message = "Hello, how are you today?"
+                await self.memory_integration.get_context_with_memories(dummy_message, force_retrieval=False)
+                print("Memory system initialized successfully.")
+            except Exception as e:
+                logger.warning(f"Failed to pre-initialize memory system: {e}")
+                print(f"Note: Memory system pre-initialization failed, but this won't affect functionality.")
+
+        # Pre-initialize sentiment analysis if enabled
+        if self.enable_sentiment_analysis and self.sentiment_manager:
+            try:
+                print("Pre-initializing sentiment analysis system...")
+                # Send a dummy text to warm up the sentiment analysis system
+                self.sentiment_manager.send_text("Hello, this is a test message.", "user")
+                print("Sentiment analysis system initialized successfully.")
+            except Exception as e:
+                logger.warning(f"Failed to pre-initialize sentiment analysis: {e}")
+                print(f"Note: Sentiment analysis pre-initialization failed, but this won't affect functionality.")
+
+        print("=== System pre-initialization complete ===\n")
+
+    async def connect(self):
+        """Connect to the WebSocket server."""
+        # logger.info(f"Connecting to WebSocket: {self.url}")
+
         # Reset WebSocket connection if it exists
         if self.ws:
             try:
@@ -285,6 +332,16 @@ class RealtimeClient:
             except:
                 pass
             self.ws = None
+
+        # Make sure transcript processor is started (should be done in pre_initialize, but just in case)
+        if not self.transcript_processor.is_running:
+            self.transcript_processor.start()
+
+            # Log the transcript directory for user information
+            if self.username:
+                print(f"User transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
+            else:
+                print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
 
         try:
             # Create the URL with the model parameter in the query string
@@ -1921,7 +1978,7 @@ class RealtimeClient:
 
             system_message = {
                 "role": "system",
-                "content": f"You are a helpful AI assistant with access to memories from previous conversations. {user_greeting} Use these memories to provide personalized and contextually relevant responses. When appropriate, reference these past interactions naturally.\n\nYou have the ability to create new memories about the user. When you want to explicitly remember something important about the user, you can use phrases like 'I'll remember that about you' or 'I'll make a note of that.' When you use these phrases, the system will automatically store this information in your memory. This is particularly useful for important user preferences, personal details, or significant events that would be helpful to recall in future conversations.\n\nYou can also explicitly trigger memory retrieval by using phrases like 'let me recall' or 'let me see what I know about you' or 'based on our previous conversations'. When you use these phrases, the system will prioritize retrieving relevant memories to help you provide more personalized responses.\n\nIf you attempt to recall information but no relevant memories are found, you will receive a system message starting with '### Memory retrieval note:'. In such cases, acknowledge that you don't have that specific information in your memory and respond based on your general knowledge instead. Be honest about what you don't know about the user's past interactions."
+                "content": f"You are a helpful AI assistant with access to memories from previous conversations. {user_greeting} Use these memories to provide personalized and contextually relevant responses. When appropriate, reference these past interactions naturally.\n\nYou have the ability to create new memories about the user. When you want to explicitly remember something important about the user, use phrases like 'I'll remember that about you' or 'I'll make a note of that.' When you use these phrases, a background orchestrator will automatically store this information in your memory. This is particularly useful for important user preferences, personal details, or significant events that would be helpful to recall in future conversations.\n\nYou can also explicitly trigger memory retrieval by using phrases like 'let me recall' or 'let me see what I know about you' or 'based on our previous conversations'. When you use these phrases, the system will prioritize retrieving relevant memories to help you provide more personalized responses.\n\nIf you attempt to recall information but no relevant memories are found, you will receive a system message starting with '### Memory retrieval note:'. In such cases, acknowledge that you don't have that specific information in your memory and respond based on your general knowledge instead. Be honest about what you don't know about the user's past interactions.\n\nDO NOT use function calls or tools to store or retrieve memories - just express your intent naturally in your response. The background orchestrator will handle the actual storage and retrieval."
             }
             messages.append(system_message)
 
@@ -2495,27 +2552,19 @@ class RealtimeClient:
             # In chat mode, we don't need to connect to the WebSocket
             print("Starting in chat mode - using OpenAI Chat Completions API")
 
-            # Start the transcript processor
-            self.transcript_processor.start()
-
-            # Log the transcript directory for user information
-            if self.username:
-                print(f"User transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
-            else:
-                print(f"Anonymous transcript directory set to: {self.transcript_processor.user_transcripts_dir}")
-
-            # --- Start Sentiment Analysis Process for Chat Mode (if enabled) ---
-            if self.enable_sentiment_analysis and self.sentiment_manager is not None:
+            # Sentiment analysis should already be initialized in pre_initialize method
+            # Just make sure it's running for chat mode
+            if self.enable_sentiment_analysis and self.sentiment_manager is not None and not self.sentiment_manager.is_running():
                 logger.info("Starting sentiment analysis process for chat mode...")
                 try:
-                    # Get the transcript directory for saving sentiment results
-                    if hasattr(self.transcript_processor, 'user_transcripts_dir'):
+                    # Get the transcript directory for saving sentiment results if not already set
+                    if not self.sentiment_file_path and hasattr(self.transcript_processor, 'user_transcripts_dir'):
                         # Use the same timestamp as the conversation for consistent file naming
                         timestamp = time.strftime("%Y%m%d_%H%M%S")
                         self.sentiment_file_path = os.path.join(self.transcript_processor.user_transcripts_dir, f'sentiment_results_{timestamp}.json')
                         print(f"Sentiment results will be saved to: {self.sentiment_file_path}")
 
-                    # Start the sentiment analysis process
+                    # Start the sentiment analysis process if not already running
                     if not self.sentiment_manager.start(self.sentiment_file_path):
                         raise ValueError("Failed to start sentiment analysis process")
 
@@ -3312,6 +3361,11 @@ async def main(conversation_mode="audio", enable_memory=True):
     # Print the selected mode and memory status
     logger.info(f"Starting in {conversation_mode} conversation mode")
     logger.info(f"Memory system is {'enabled' if enable_memory else 'disabled'}")
+
+    # Pre-initialize the client to reduce lag on first message
+    print("\nPre-initializing system to reduce lag on first message...")
+    await client.pre_initialize()
+    print("Pre-initialization complete. The system is now ready for faster responses.")
 
     # Get the shared emotion scores from the client if available
     if enable_sentiment and client.sentiment_manager and client.sentiment_manager.is_initialized:

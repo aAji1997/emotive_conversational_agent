@@ -498,10 +498,21 @@ class SentimentAnalysisManager:
         self.sentiment_update_thread = None
         self.sentiment_stop_event = threading.Event()
         self.sentiment_file_path = None
-        self.is_initialized = False
 
-        # Initialize components and store the result
+        # Initialize components during creation
+        self.is_initialized = False
         self.is_initialized = self._initialize_components()
+
+    def is_running(self):
+        """Check if the sentiment analysis process is running.
+
+        Returns:
+            bool: True if the process is running, False otherwise
+        """
+        return (self.sentiment_process is not None and
+                self.sentiment_process.is_alive() and
+                self.sentiment_update_thread is not None and
+                self.sentiment_update_thread.is_alive())
 
     def _initialize_components(self):
         """
