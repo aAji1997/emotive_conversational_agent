@@ -265,6 +265,15 @@ class TranscriptProcessor:
             self.user_transcripts_dir.mkdir(exist_ok=True)
             logger.info(f"Anonymous transcript directory set to: {self.user_transcripts_dir.absolute()}")
 
+    @property
+    def is_running(self):
+        """Check if the transcript processor is running.
+
+        Returns:
+            bool: True if the processor is running, False otherwise
+        """
+        return self.running and self.processing_thread is not None and self.processing_thread.is_alive()
+
     def start(self):
         """Start the transcript processing thread."""
         if self.processing_thread is None or not self.processing_thread.is_alive():

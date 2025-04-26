@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class MemoryIntegration:
     """Integration class for the memory agent."""
 
-    def __init__(self, openai_api_key: str, gemini_api_key: str = None, user_id: str = None, supabase_url: str = None, supabase_key: str = None, optimize_performance: bool = True):
+    def __init__(self, openai_api_key: str, gemini_api_key: str = None, user_id: str = None, supabase_url: str = None, supabase_key: str = None, optimize_performance: bool = True, strict_intent_detection: bool = True):
         """Initialize the memory integration.
 
         Args:
@@ -32,6 +32,7 @@ class MemoryIntegration:
             supabase_url: Optional Supabase URL for database connection
             supabase_key: Optional Supabase API key for database connection
             optimize_performance: Whether to optimize performance by reducing unnecessary memory retrievals
+            strict_intent_detection: If True, only retrieve memories when explicit intent is detected
         """
         self.openai_api_key = openai_api_key
         self.gemini_api_key = gemini_api_key
@@ -39,6 +40,7 @@ class MemoryIntegration:
         self.supabase_url = supabase_url
         self.supabase_key = supabase_key
         self.optimize_performance = optimize_performance
+        self.strict_intent_detection = strict_intent_detection
 
         # Track if we've already retrieved memories for the current message
         self.last_retrieval_message = None
@@ -80,6 +82,45 @@ class MemoryIntegration:
 
         # Initialize the memory agent
         self.memory_agent = self._create_memory_agent()
+
+        # Define common phrases for optimization
+        self.simple_greetings = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
+        self.common_phrases = [
+            "how are you", "how's it going", "what's up", "how have you been",
+            "i'm good", "i'm fine", "i'm okay", "i'm great", "i'm well", "i'm doing well",
+            "good morning", "good afternoon", "good evening", "good night",
+            "nice to meet you", "nice to see you", "nice talking to you",
+            "see you later", "talk to you later", "bye", "goodbye"
+        ]
+
+        # Add a helper method to check for simple messages
+        def is_simple_message(self, message: str, force_retrieval: bool = False) -> bool:
+            """Check if a message is a simple greeting or common phrase that doesn't need memory retrieval.
+
+            Args:
+                message: The message to check
+                force_retrieval: If True, always return False (don't skip retrieval)
+
+            Returns:
+                True if the message is simple and should skip memory retrieval, False otherwise
+            """
+            if force_retrieval:
+                return False
+
+            message_lower = message.lower().strip()
+
+            # Check for simple greetings
+            if any(message_lower.startswith(msg) for msg in self.simple_greetings) and len(message.split()) < 5:
+                return True
+
+            # Check for common conversational phrases
+            if any(phrase in message_lower for phrase in self.common_phrases) and len(message.split()) < 10:
+                return True
+
+            return False
+
+        # Attach the method to the instance
+        self.is_simple_message = is_simple_message.__get__(self)
 
         logger.info("Memory integration initialized with GPT-4o-mini for storage/retrieval and Gemini 2.0 Flash for orchestration")
 
@@ -171,16 +212,24 @@ class MemoryIntegration:
 
             # For location-related queries, always force retrieval
             location_terms = ["where", "live", "location", "address", "city", "state", "country", "from", "reside"]
-            if any(term in current_message.lower() for term in location_terms):
+            is_location_query = any(term in current_message.lower() for term in location_terms)
+            if is_location_query:
                 force_retrieval = True
                 print(f"\n[MEMORY INTEGRATION] Location-related query detected, forcing memory retrieval: '{current_message[:50]}...'")
                 logger.info("Location-related query detected, forcing memory retrieval")
 
+            # If strict intent detection is enabled and no intent is detected, skip memory retrieval completely
+            if self.strict_intent_detection and not force_retrieval and not is_location_query:
+                print(f"\n[MEMORY INTEGRATION] Strict intent detection enabled - skipping memory retrieval for: '{current_message}'")
+                logger.info(f"Strict intent detection enabled - skipping memory retrieval")
+                self.last_retrieval_message = current_message
+                self.last_retrieval_result = []
+                return []
+
             # Skip retrieval for simple messages if performance optimization is enabled
             if self.optimize_performance and not force_retrieval:
-                # Skip retrieval for simple greetings and acknowledgments
-                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
-                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                # Use the helper method to check if this is a simple message
+                if self.is_simple_message(current_message, force_retrieval):
                     print(f"\n[MEMORY INTEGRATION] Skipping memory retrieval for simple message: '{current_message}'")
                     logger.info(f"Skipping memory retrieval for simple message: '{current_message}'")
                     self.last_retrieval_message = current_message
@@ -231,11 +280,25 @@ class MemoryIntegration:
             Formatted string of memories for inclusion in the prompt
         """
         try:
+            # Check if this is a message that needs memory retrieval
+            if not force_retrieval:
+                force_retrieval = self._detect_memory_retrieval_intent(current_message)
+
+            # If strict intent detection is enabled and no intent is detected, skip memory retrieval completely
+            if self.strict_intent_detection and not force_retrieval:
+                # Check for location-related queries which should always trigger retrieval
+                location_terms = ["where", "live", "location", "address", "city", "state", "country", "from", "reside"]
+                is_location_query = any(term in current_message.lower() for term in location_terms)
+
+                if not is_location_query:
+                    print(f"\n[MEMORY INTEGRATION] Strict intent detection enabled - skipping memory context for: '{current_message}'")
+                    logger.info(f"Strict intent detection enabled - skipping memory context")
+                    return ""  # Return empty context
+
             # Skip memory retrieval for simple messages if performance optimization is enabled
             if self.optimize_performance and not force_retrieval:
-                # Skip retrieval for simple greetings and acknowledgments
-                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
-                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                # Use the helper method to check if this is a simple message
+                if self.is_simple_message(current_message, force_retrieval):
                     print(f"\n[MEMORY INTEGRATION] Skipping memory context for simple message: '{current_message}'")
                     logger.info(f"Skipping memory context for simple message: '{current_message}'")
                     return ""  # Return empty context
@@ -307,11 +370,21 @@ class MemoryIntegration:
             # Check if this is a message that needs memory retrieval
             force_retrieval = self._detect_memory_retrieval_intent(current_message)
 
+            # If strict intent detection is enabled and no intent is detected, skip memory retrieval completely
+            if self.strict_intent_detection and not force_retrieval:
+                # Check for location-related queries which should always trigger retrieval
+                location_terms = ["where", "live", "location", "address", "city", "state", "country", "from", "reside"]
+                is_location_query = any(term in current_message.lower() for term in location_terms)
+
+                if not is_location_query:
+                    print(f"\n[MEMORY INTEGRATION] Strict intent detection enabled - skipping memory retrieval for: '{current_message}'")
+                    logger.info(f"Strict intent detection enabled - skipping memory retrieval")
+                    return messages  # Return original messages without enhancement
+
             # Skip memory retrieval for simple messages if performance optimization is enabled
             if self.optimize_performance and not force_retrieval:
-                # Skip retrieval for simple greetings and acknowledgments
-                simple_messages = ["hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "sure", "yes", "no"]
-                if any(current_message.lower().strip().startswith(msg) for msg in simple_messages) and len(current_message.split()) < 5:
+                # Use the helper method to check if this is a simple message
+                if self.is_simple_message(current_message, force_retrieval):
                     print(f"\n[MEMORY INTEGRATION] Skipping memory enhancement for simple message: '{current_message}'")
                     logger.info(f"Skipping memory enhancement for simple message: '{current_message}'")
                     return messages  # Return original messages without enhancement
@@ -429,6 +502,11 @@ class MemoryIntegration:
         Returns:
             True if memory retrieval intent is detected, False otherwise
         """
+        # Skip intent detection for very short messages or simple messages
+        if len(message.split()) < 3 or (hasattr(self, 'is_simple_message') and self.is_simple_message(message)):
+            print(f"\n[MEMORY RETRIEVAL] Skipping intent detection for simple message: '{message[:50]}...'")
+            return False
+
         # List of phrases that indicate memory retrieval intent
         retrieval_phrases = [
             "let me recall",
