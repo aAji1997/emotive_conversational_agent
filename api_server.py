@@ -572,8 +572,15 @@ class WebSocketRealtimeClient(RealtimeClient):
             return False
 
 # Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
+
+# Disable most loggers to reduce noise
+for log_name in logging.root.manager.loggerDict:
+    logging.getLogger(log_name).setLevel(logging.ERROR)
+
+# Set our logger to INFO level to see important messages
+logger.setLevel(logging.INFO)
 
 # Create Flask app
 app = Flask(__name__)
@@ -585,7 +592,8 @@ socketio = SocketIO(
     ping_timeout=60,  # Increase ping timeout to 60 seconds
     ping_interval=25,  # Send pings more frequently
     max_http_buffer_size=50 * 1024 * 1024,  # Increase buffer size for large audio chunks
-    engineio_logger=True  # Enable Engine.IO logging for debugging
+    engineio_logger=False,  # Disable Engine.IO logging
+    logger=False  # Disable SocketIO logging
 )
 
 # Load API keys
@@ -718,42 +726,56 @@ def login():
     username = data.get('username', '')
 
     if not username:
+        logger.error("Login attempt with empty username")
         return jsonify({"error": "Username is required"}), 400
 
     # Ensure we have a valid connection to Supabase
     if not user_manager.connect():
+        logger.error(f"Failed to connect to database during login for username: {username}")
         return jsonify({"error": "Failed to connect to database"}), 500
 
     # Check if user exists, create if not
-    user = user_manager.get_user_by_username(username)
-    if not user:
-        # Try to register a new user
-        user = user_manager.register_user(username=username, display_name=username)
+    try:
+        user = user_manager.get_user_by_username(username)
+        if user:
+            logger.info(f"Existing user found: {username} (ID: {user['id']})")
+        else:
+            logger.info(f"User not found, attempting to register new user: {username}")
+            # Try to register a new user
+            user = user_manager.register_user(username=username, display_name=username)
+            if user:
+                logger.info(f"Successfully registered new user: {username} (ID: {user['id']})")
+            else:
+                logger.error(f"Failed to register new user: {username}")
+                return jsonify({"error": "Failed to register user"}), 500
+
         if not user:
-            return jsonify({"error": "Failed to register user"}), 500
+            logger.error(f"Failed to login or register user: {username}")
+            return jsonify({"error": "Failed to login or register user"}), 500
 
-    if not user:
-        return jsonify({"error": "Failed to login or register user"}), 500
+        # Start pre-initialization in the background
+        # This will create the client but won't block the login response
+        user_id = user["id"]
 
-    # Start pre-initialization in the background
-    # This will create the client but won't block the login response
-    user_id = user["id"]
+        # Reset client initialization state if it exists
+        if user_id in clients:
+            clients[user_id].is_initializing = False
+            clients[user_id].is_initialized = False
+            clients[user_id].first_message_processed = False
+            logger.info(f"Reset initialization state for existing client: {username} (ID: {user_id})")
 
-    # Reset client initialization state if it exists
-    if user_id in clients:
-        clients[user_id].is_initializing = False
-        clients[user_id].is_initialized = False
-        clients[user_id].first_message_processed = False
-        logger.info(f"Reset initialization state for existing client: {username} (ID: {user_id})")
+        # Start pre-initialization
+        threading.Thread(target=pre_initialize_client_background, args=(user_id, username), daemon=True).start()
+        logger.info(f"Started pre-initialization thread for user: {username} (ID: {user_id})")
 
-    # Start pre-initialization
-    threading.Thread(target=pre_initialize_client_background, args=(user_id, username), daemon=True).start()
-
-    return jsonify({
-        "user_id": user["id"],
-        "username": user["username"],
-        "display_name": user.get("display_name", username)
-    })
+        return jsonify({
+            "user_id": user["id"],
+            "username": user["username"],
+            "display_name": user.get("display_name", username)
+        })
+    except Exception as e:
+        logger.error(f"Unexpected error during login/registration for {username}: {str(e)}")
+        return jsonify({"error": f"Login failed: {str(e)}"}), 500
 
 @app.route('/api/logout', methods=['POST'])
 def logout():
@@ -899,7 +921,75 @@ def process_audio():
 @app.route('/api/emotions', methods=['GET'])
 def get_emotions():
     """Get current emotion data."""
+    user_id = request.args.get('user_id', '')
+
+    # If user_id is provided, get client-specific emotion data
+    if user_id and user_id in clients:
+        client = clients[user_id]
+        # Use the client's sentiment manager to get emotion data
+        if client.enable_sentiment_analysis and hasattr(client, 'sentiment_manager') and client.sentiment_manager:
+            emotion_scores = client.sentiment_manager.get_current_emotion_scores()
+            if emotion_scores:
+                logger.info(f"Returning client-specific emotion data for user {user_id}: {emotion_scores}")
+                return jsonify(emotion_scores)
+            else:
+                logger.warning(f"Client sentiment manager returned no emotion data for user {user_id}")
+        else:
+            logger.warning(f"Client has no sentiment manager or sentiment analysis is disabled for user {user_id}")
+    else:
+        logger.info(f"No user_id provided or user not found, returning global emotion data")
+
+    # Fall back to global emotion data
     return jsonify(get_current_emotions())
+
+@app.route('/api/test-emotions', methods=['POST'])
+def test_emotions():
+    """Test endpoint to manually update emotion scores."""
+    data = request.json
+    user_id = data.get('user_id', '')
+
+    if not user_id:
+        return jsonify({"error": "User ID is required"}), 400
+
+    # Get the emotion scores from the request
+    user_emotions = data.get('user', {})
+    assistant_emotions = data.get('assistant', {})
+
+    # Validate the emotion scores
+    for emotion in CORE_EMOTIONS:
+        if emotion not in user_emotions:
+            user_emotions[emotion] = 0.0
+        if emotion not in assistant_emotions:
+            assistant_emotions[emotion] = 0.0
+
+    # Update the emotion scores
+    if user_id in clients:
+        client = clients[user_id]
+
+        # Update the client's sentiment manager
+        if client.enable_sentiment_analysis and hasattr(client, 'sentiment_manager') and client.sentiment_manager:
+            if client.sentiment_manager.shared_emotion_scores:
+                # Update user emotions
+                client.sentiment_manager.shared_emotion_scores.update_emotion_scores('user', user_emotions)
+                # Update assistant emotions
+                client.sentiment_manager.shared_emotion_scores.update_emotion_scores('assistant', assistant_emotions)
+
+                logger.info(f"Manually updated emotion scores for user {user_id}")
+                return jsonify({"success": True, "message": "Emotion scores updated successfully"})
+            else:
+                logger.warning(f"Client has no shared emotion scores")
+        else:
+            logger.warning(f"Client has no sentiment manager or sentiment analysis is disabled")
+
+    # If we get here, update the global shared emotion state
+    if shared_emotion_scores:
+        shared_emotion_scores.update_emotion_scores('user', user_emotions)
+        shared_emotion_scores.update_emotion_scores('assistant', assistant_emotions)
+
+        logger.info(f"Manually updated global emotion scores")
+        return jsonify({"success": True, "message": "Global emotion scores updated successfully"})
+
+    return jsonify({"error": "Failed to update emotion scores"}), 500
 
 @app.route('/api/memories', methods=['GET'])
 def get_memories():
@@ -962,7 +1052,7 @@ def get_or_create_client(user_id, username=None):
     )
 
     # Ensure sentiment analysis is properly initialized
-    if client.enable_sentiment_analysis and not hasattr(client, 'sentiment_manager') or not client.sentiment_manager:
+    if client.enable_sentiment_analysis and (not hasattr(client, 'sentiment_manager') or not client.sentiment_manager):
         try:
             # Import the SentimentAnalysisManager class
             from gpt_realtime.sentiment_analyzer import SentimentAnalysisManager
@@ -972,9 +1062,52 @@ def get_or_create_client(user_id, username=None):
                 google_api_key=gemini_api_key,
                 sentiment_model_name=client.sentiment_model_name
             )
+
+            # Set the use_text_only flag to True for better performance
+            client.sentiment_manager.use_text_only = True
+            logger.info(f"Set use_text_only to {client.sentiment_manager.use_text_only} for better performance")
+
+            # Ensure the sentiment manager is using the shared emotion state
+            if hasattr(client.sentiment_manager, 'shared_emotion_scores') and client.sentiment_manager.shared_emotion_scores:
+                logger.info(f"Sentiment manager has its own shared emotion state")
+            else:
+                logger.info(f"Setting sentiment manager to use global shared emotion state")
+                client.sentiment_manager.shared_emotion_scores = shared_emotion_scores
+
+            # Set the audio mode flag based on the conversation mode
+            if hasattr(client.sentiment_manager, 'shared_emotion_scores') and client.sentiment_manager.shared_emotion_scores:
+                is_audio_mode = client.conversation_mode == "audio"
+                client.sentiment_manager.shared_emotion_scores.set_audio_mode(is_audio_mode)
+
+                # Set the use_text_only flag based on the conversation mode
+                # For audio mode, use text-only sentiment analysis for better performance
+                # For text mode, also use text-only sentiment analysis
+                client.sentiment_manager.use_text_only = True
+                logger.info(f"Set audio mode to {is_audio_mode} and use_text_only to {client.sentiment_manager.use_text_only} for client {client.user_id}")
+
+            # Start the sentiment analysis process if not already running
+            if not client.sentiment_manager.is_running():
+                # Create a user-specific directory for transcripts and sentiment results
+                user_dir = f"transcripts/{client.username}" if client.username else f"transcripts/user_{client.user_id}"
+                os.makedirs(user_dir, exist_ok=True)
+
+                # Set up the sentiment file path
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                sentiment_file_path = os.path.join(user_dir, f'sentiment_results_{timestamp}.json')
+
+                # Start the sentiment analysis process
+                if client.sentiment_manager.start(sentiment_file_path):
+                    client.sentiment_file_path = sentiment_file_path
+                    logger.info(f"Sentiment analysis process started and will save results to {sentiment_file_path}")
+                else:
+                    logger.warning(f"Failed to start sentiment analysis process")
+            else:
+                logger.info(f"Sentiment analysis process already running")
+
             logger.info(f"Sentiment analysis manager initialized for model {client.sentiment_model_name}")
         except Exception as e:
             logger.warning(f"Failed to initialize sentiment analysis manager: {e}")
+            logger.exception(e)  # Log the full exception for debugging
             client.enable_sentiment_analysis = False
 
     # Add initialization flags

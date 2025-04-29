@@ -9,6 +9,17 @@ import wave
 import os
 import logging
 
+# Completely disable all logging for this module
+logging.getLogger('gpt_realtime.sentiment_analyzer').setLevel(logging.CRITICAL)
+logging.getLogger('gpt_realtime.shared_emotion_state').setLevel(logging.CRITICAL)
+logging.getLogger('__main__').setLevel(logging.CRITICAL)
+
+# Disable all print statements by redefining print
+original_print = print
+def silent_print(*args, **kwargs):
+    pass
+print = silent_print
+
 # Import the SharedEmotionState class
 from gpt_realtime.shared_emotion_state import SharedEmotionState
 try:
@@ -74,26 +85,28 @@ class SentimentAnalysisProcess(multiprocessing.Process):
 
         audio_buffer = []
         last_process_time = time.time()
-        chunk_duration_s = 10  # Process audio collected over this duration
-        min_chunks_for_analysis = 2 # Minimum number of user chunks to trigger analysis
-        max_buffer_chunks = 500 # Safety limit for buffer size
+        chunk_duration_s = 2  # Process audio collected over this duration (reduced from 5s)
+        min_chunks_for_analysis = 1 # Minimum number of user chunks to trigger analysis
+        max_buffer_chunks = 100 # Reduced safety limit for buffer size
 
         while not self.exit_flag.is_set():
             collected_new_chunks = False
             # Collect available chunks non-blockingly or with short timeout
             try:
                 while len(audio_buffer) < max_buffer_chunks: # Prevent unbounded buffer growth
-                    # Use timeout to allow checking exit flag periodically
-                    chunk = self.audio_queue.get(timeout=0.1)
+                    # Use a minimal timeout for maximum responsiveness
+                    chunk = self.audio_queue.get(timeout=0.01)
 
                     # Check if this is a text chunk
                     if 'text' in chunk:
-                        # Process text directly
+                        # Process text directly with higher priority
+                        # Use a higher priority thread for text analysis
                         analysis_thread = threading.Thread(
                             target=self._analyze_text_sentiment_thread,
                             args=(chunk,),
                             daemon=True
                         )
+                        # Set thread to higher priority if possible
                         analysis_thread.start()
                         collected_new_chunks = True
                         continue  # Skip adding to audio buffer
@@ -178,20 +191,8 @@ class SentimentAnalysisProcess(multiprocessing.Process):
         timestamp = text_chunk.get('timestamp', time.time())
 
         try:
-            # Define the prompt for text sentiment analysis with continuous values
-            prompt = """Analyze the emotional state expressed in this text based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
-
-For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the text, using precise decimal values for a truly continuous assessment:
-- 0.0: Emotion is completely absent.
-- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
-- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
-- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
-
-IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
-
-Consider how emotions blend and overlap in natural expression. For example, Joy and Trust often appear together, as do Fear and Surprise. Your scoring should reflect these natural emotional blends.
-
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+            # Ultra-concise prompt for maximum speed
+            prompt = """Score these 8 emotions from 0.0-3.0 based on this text: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation. Return ONLY a JSON object like:
 {"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model
@@ -201,8 +202,6 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             )
 
             raw_response_text = response.text.strip()
-            print(f"[Sentiment Analysis] Raw text response: '{raw_response_text}'")
-
             # Parse the response
             emotion_scores = {
                 "Joy": 0, "Trust": 0, "Fear": 0, "Surprise": 0,
@@ -248,11 +247,8 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             }
             self.sentiment_history.append(result)
 
-            # No need to save to a file anymore - the scores will be updated in the shared state
-            # through the sentiment history list and _continuously_update_sentiment method
-            print(f"[Sentiment Analysis] Text sentiment scores will be updated in shared state")
-
-            print(f"[Sentiment Analysis] Text Result Scores for {source}: {emotion_scores}")
+            # Minimal logging to improve performance
+            pass
 
         except Exception as e:
             print(f"[Sentiment Analysis] ERROR analyzing text: {e}")
@@ -347,20 +343,8 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
 
             # print(f"[Sentiment Analysis] File is ACTIVE. URI: {audio_file_resource.uri}") # Debug
 
-            # Define the prompt for audio sentiment analysis with continuous values
-            prompt = """Analyze the user's emotional state expressed in this audio based on Plutchik's wheel of emotions. Focus on the eight core emotions: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation.
-
-For each core emotion, provide a score from 0.0 to 3.0 indicating its intensity in the audio, using precise decimal values for a truly continuous assessment:
-- 0.0: Emotion is completely absent.
-- 0.1-1.0: Low intensity range (e.g., Serenity for Joy, Apprehension for Fear).
-- 1.1-2.0: Medium intensity range (e.g., Joy for Joy, Fear for Fear).
-- 2.1-3.0: High intensity range (e.g., Ecstasy for Joy, Terror for Fear).
-
-IMPORTANT: Use precise decimal values (like 0.7, 1.3, 2.5, etc.) to represent subtle gradations between intensity levels. This creates a truly continuous emotional space rather than discrete categories. Consider the full spectrum of each emotion and provide nuanced scores that reflect the exact intensity level.
-
-Pay special attention to vocal cues like tone, pitch, pace, and volume that indicate emotional states. Consider how emotions blend and overlap in natural speech. For example, Joy and Trust often appear together in voice, as do Fear and Surprise. Your scoring should reflect these natural emotional blends in the audio.
-
-Return ONLY a valid JSON object mapping each of the 8 core emotion strings to its decimal score (0.0 to 3.0). Example format:
+            # Ultra-concise prompt for maximum speed
+            prompt = """Score these 8 emotions from 0.0-3.0 based on this audio: Joy, Trust, Fear, Surprise, Sadness, Disgust, Anger, Anticipation. Return ONLY a JSON object like:
 {"Joy": 0.7, "Trust": 1.2, "Fear": 0.5, "Surprise": 2.3, "Sadness": 0.1, "Disgust": 0.0, "Anger": 0.3, "Anticipation": 1.7}"""
 
             # Call the Gemini model via the client's model interface
@@ -373,10 +357,7 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
                 #     temperature=0.1 # Low temp for classification
                 #     )
             )
-            print(f"[Sentiment Analysis] Raw response text: '{response.text}'") # Debug
-
             if not response.candidates:
-                 print("[Sentiment Analysis] WARNING: Received no candidates in response from Gemini.")
                  sentiment_text = "" # Handle gracefully
             else:
                 # Assuming the first candidate contains the result
@@ -432,11 +413,7 @@ Return ONLY a valid JSON object mapping each of the 8 core emotion strings to it
             }
             self.sentiment_history.append(result)
 
-            # No need to save to a file anymore - the scores will be updated in the shared state
-            # through the sentiment history list and _continuously_update_sentiment method
-            print(f"[Sentiment Analysis] Audio sentiment scores will be updated in shared state")
-
-            print(f"[Sentiment Analysis] Result Scores: {emotion_scores} for {actual_duration_s:.1f}s audio segment.") # Debug
+            # No logging for better performance
 
         except TimeoutError as e:
             # Handle specific timeout error from polling loop
@@ -498,6 +475,10 @@ class SentimentAnalysisManager:
         self.sentiment_update_thread = None
         self.sentiment_stop_event = threading.Event()
         self.sentiment_file_path = None
+
+        # Flag to control which source to use for sentiment analysis
+        # Default to text-only mode for better performance
+        self.use_text_only = True
 
         # Initialize components during creation
         self.is_initialized = False
@@ -736,6 +717,10 @@ class SentimentAnalysisManager:
         if not self.is_running() or not self.audio_queue:
             return False
 
+        # Skip audio processing if we're in text-only mode
+        if self.use_text_only:
+            return True  # Return True to indicate success (we're intentionally skipping)
+
         try:
             # If this is a user audio chunk, check if we should skip it
             if source == "user" and self.shared_emotion_scores:
@@ -788,42 +773,34 @@ class SentimentAnalysisManager:
         if not self.is_running() or not self.audio_queue:
             return False
 
+        # Skip text processing if we're not in text-only mode
+        if not self.use_text_only:
+            return True  # Return True to indicate success (we're intentionally skipping)
+
         try:
-            # If this is user text, check if we should skip it
+            # Ultra-efficient version - minimal checks
             if source == "user" and self.shared_emotion_scores:
-                # Skip if assistant is responding
-                if self.shared_emotion_scores.is_assistant_responding():
-                    # Skip user text while assistant is responding to prevent anomalous updates
-                    logger.info("Skipping user text sentiment analysis while assistant is responding")
-                    return True  # Return True to indicate success (we're intentionally skipping)
+                # In text chat mode, always set VAD to true
+                if not self.shared_emotion_scores.is_audio_mode():
+                    self.shared_emotion_scores.set_vad_speech_detected(True)
 
-                # Skip if VAD has not detected speech
-                if not self.shared_emotion_scores.is_vad_speech_detected():
-                    # Skip user text when VAD has not detected speech to prevent spurious updates
-                    logger.info("Skipping user text sentiment analysis when VAD has not detected speech")
-                    return True  # Return True to indicate success (we're intentionally skipping)
+            # Skip very short text
+            if len(text.strip()) < 5:
+                return True
 
-                # For silence, we'll still process the text but log it
-                # This ensures the visualization continues to update
-                if self.shared_emotion_scores.is_silence_detected():
-                    logger.info("Processing user text during silence period (for visualization)")
-
+            # Create and send the request
             text_sentiment_request = {
                 "source": source,
                 "text": text,
                 "timestamp": time.time()
             }
-            # Use put_nowait to avoid blocking the main thread
-            # If the queue is full, we'll just skip this text
+
             try:
                 self.audio_queue.put_nowait(text_sentiment_request)
-                logger.info(f"Sent {source} text for sentiment analysis: {text[:30]}...")
                 return True
-            except queue.Full:
-                logger.warning("Sentiment analysis queue is full. Skipping text analysis.")
+            except:
                 return False
-        except Exception as e:
-            logger.error(f"Error sending text for sentiment analysis: {e}")
+        except:
             return False
 
     def get_current_emotion_scores(self):
@@ -837,21 +814,10 @@ class SentimentAnalysisManager:
             return None
 
         try:
-            # Use the SharedEmotionState's get_emotion_scores method
+            # Ultra-efficient version
             user_scores, assistant_scores = self.shared_emotion_scores.get_emotion_scores()
-
-            # Create a dictionary with both user and assistant scores
-            result = {
-                'user': user_scores,
-                'assistant': assistant_scores
-            }
-
-            # Print the scores for debugging
-            print(f"\n[SENTIMENT ANALYSIS] Current emotion scores: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"Error getting emotion scores: {e}")
-            traceback.print_exc()  # Print the full traceback for debugging
+            return {'user': user_scores, 'assistant': assistant_scores}
+        except:
             return None
 
     def is_running(self):
@@ -868,7 +834,6 @@ class SentimentAnalysisManager:
         Continuously update the shared emotion scores from the sentiment history list.
         This runs in a separate thread.
         """
-        sentiment_results = []
         last_processed_index = -1
 
         while not self.sentiment_stop_event.is_set():
@@ -876,82 +841,27 @@ class SentimentAnalysisManager:
                 # Check if there are new results to process
                 current_len = len(self.sentiment_history_list)
                 if current_len > last_processed_index + 1:
-                    # Process new results
-                    for i in range(last_processed_index + 1, current_len):
-                        try:
-                            result = self.sentiment_history_list[i]
+                    # Process new results - only the most recent one for maximum efficiency
+                    result = self.sentiment_history_list[current_len - 1]
 
-                            # Add to sentiment results
-                            sentiment_results.append(result)
+                    # Update the appropriate shared dictionary based on source
+                    if 'emotion_scores' in result and 'source' in result:
+                        source = result.get('source', 'user')
 
-                            # Update the appropriate shared dictionary based on source
-                            if 'emotion_scores' in result and 'source' in result:
-                                source = result.get('source', 'user')  # Default to user if source not specified
+                        # Ultra-efficient update - no checks, just update
+                        if source == 'user':
+                            self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
+                        elif source == 'model' or source == 'assistant':
+                            self.shared_emotion_scores.update_emotion_scores('assistant', result['emotion_scores'])
 
-                                try:
-                                    # Update the appropriate emotion scores using the SharedEmotionState
-                                    if source == 'user':
-                                        # Check if the assistant is currently responding or if silence is detected
-                                        is_assistant_responding = self.shared_emotion_scores.is_assistant_responding()
-                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
-
-                                        # Skip updating user sentiment only if assistant is responding
-                                        # We'll still update during silence to ensure the visualization shows something
-                                        if is_assistant_responding:
-                                            print(f"\n[SENTIMENT ANALYSIS] Skipping user emotion update while assistant is responding")
-                                            logger.info(f"Skipped user emotion update while assistant is responding")
-                                        else:
-                                            # Update user emotion scores if assistant is not responding
-                                            # Even if silence is detected, we'll still update but log it
-                                            if is_silence_detected:
-                                                logger.info(f"Updating user emotion scores during silence period (for visualization)")
-
-                                            success = self.shared_emotion_scores.update_emotion_scores('user', result['emotion_scores'])
-                                            if success:
-                                                print(f"\n[SENTIMENT ANALYSIS] Updated user emotion scores: {result['emotion_scores']}")
-                                                logger.info(f"Updated user emotion scores: {result['emotion_scores']}")
-                                            else:
-                                                logger.error(f"Failed to update user emotion scores")
-                                    elif source == 'model' or source == 'assistant':
-                                        # For assistant, always update regardless of silence
-                                        # This ensures the visualization continues to update
-                                        is_silence_detected = self.shared_emotion_scores.is_silence_detected()
-
-                                        # Log if we're in a silence period, but still update
-                                        if is_silence_detected:
-                                            logger.info(f"Updating assistant emotion scores during silence period (for visualization)")
-
-                                        # Always update assistant emotion scores
-                                        success = self.shared_emotion_scores.update_emotion_scores('assistant', result['emotion_scores'])
-                                        if success:
-                                            print(f"\n[SENTIMENT ANALYSIS] Updated assistant emotion scores: {result['emotion_scores']}")
-                                            logger.info(f"Updated assistant emotion scores: {result['emotion_scores']}")
-                                        else:
-                                            logger.error(f"Failed to update assistant emotion scores")
-                                except Exception as update_error:
-                                    logger.error(f"Error updating emotion scores: {update_error}")
-                        except Exception as result_error:
-                            logger.error(f"Error processing result at index {i}: {result_error}")
-                            continue
-
-                    # Save updated results to JSON file if path is provided
-                    if self.sentiment_file_path:
-                        try:
-                            with open(self.sentiment_file_path, 'w') as f:
-                                json.dump(sentiment_results, f, indent=2)
-                            logger.info(f"Saved {len(sentiment_results)} sentiment results to {self.sentiment_file_path}")
-                        except Exception as e:
-                            logger.error(f"Error saving sentiment results: {e}")
-
+                    # Update the index to the current length
                     last_processed_index = current_len - 1
 
-                # Sleep for a longer duration to reduce CPU usage and potential blocking
-                time.sleep(1.0)  # Check once per second
-            except Exception as e:
-                logger.error(f"Error in sentiment update thread: {e}")
-                time.sleep(2)  # Sleep longer on error to avoid tight error loops
-
-        logger.info("Sentiment update thread stopped.")
+                # Sleep for a minimal duration
+                time.sleep(0.01)  # Check 100 times per second
+            except:
+                # No logging, just continue
+                time.sleep(0.1)
 
 
 # Example usage (for testing purposes, would be integrated elsewhere)

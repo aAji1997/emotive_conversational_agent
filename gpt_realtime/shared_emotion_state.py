@@ -11,6 +11,9 @@ import logging
 import time
 from typing import Dict, Optional, Tuple, Any
 
+# Completely disable all logging for this module
+logging.getLogger('gpt_realtime.shared_emotion_state').setLevel(logging.CRITICAL)
+
 # Configure logging
 logger = logging.getLogger(__name__)
 
@@ -46,7 +49,8 @@ class SharedEmotionState:
             'assistant_is_responding': False,  # Flag to track if assistant is responding
             'silence_detected': False,  # Flag to track if silence is detected
             'last_audio_activity_time': time.time(),  # Track the last time audio activity was detected
-            'vad_speech_detected': False  # Flag to track if VAD has detected speech
+            'vad_speech_detected': False,  # Flag to track if VAD has detected speech
+            'is_audio_mode': False  # Flag to track if we're in audio mode or text chat mode
         }
 
         # Initialize the shared dictionary if it doesn't have the expected structure
@@ -65,6 +69,8 @@ class SharedEmotionState:
                 self.shared_dict['last_audio_activity_time'] = time.time()
             if 'vad_speech_detected' not in self.shared_dict:
                 self.shared_dict['vad_speech_detected'] = False
+            if 'is_audio_mode' not in self.shared_dict:
+                self.shared_dict['is_audio_mode'] = False
 
     def update_emotion_scores(self, source: str, emotion_scores: Dict[str, float]) -> bool:
         """
@@ -78,36 +84,26 @@ class SharedEmotionState:
             bool: True if the update was successful, False otherwise.
         """
         if source not in ['user', 'assistant']:
-            logger.error(f"Invalid source: {source}. Must be 'user' or 'assistant'.")
             return False
 
         try:
             with self.lock:
-                # For multiprocessing shared dictionaries, we need to replace the entire dictionary
-                # Create a new dictionary with all emotion scores
-                new_scores = {emotion: 0.0 for emotion in CORE_EMOTIONS}
+                # Ultra-efficient version - just update the scores directly
+                new_scores = dict(self.shared_dict.get(source, {}))
 
-                # Update with existing scores first (if available)
-                if source in self.shared_dict:
-                    existing_scores = self.shared_dict[source]
-                    if isinstance(existing_scores, dict):
-                        new_scores.update(dict(existing_scores))
-
-                # Then update with new scores
+                # Update with new scores
                 for emotion, score in emotion_scores.items():
                     if emotion in CORE_EMOTIONS:
-                        new_scores[emotion] = float(score)  # Ensure scores are float
+                        new_scores[emotion] = float(score)
 
-                # Replace the entire dictionary in the shared dictionary
+                # Replace the entire dictionary
                 self.shared_dict[source] = new_scores
 
                 # Update the last update time
                 self.shared_dict['last_update_time'] = time.time()
 
-                logger.debug(f"Updated {source} emotion scores: {new_scores}")
                 return True
-        except Exception as e:
-            logger.error(f"Error updating emotion scores: {e}")
+        except:
             return False
 
     def get_emotion_scores(self) -> Tuple[Dict[str, float], Dict[str, float]]:
@@ -118,17 +114,9 @@ class SharedEmotionState:
             tuple: (user_scores, assistant_scores) dictionaries.
         """
         with self.lock:
-            # Create copies of the dictionaries to avoid modification issues
-            user_scores = dict(self.shared_dict.get('user', {emotion: 0.0 for emotion in CORE_EMOTIONS}))
-            assistant_scores = dict(self.shared_dict.get('assistant', {emotion: 0.0 for emotion in CORE_EMOTIONS}))
-
-            # Ensure all emotions are present
-            for emotion in CORE_EMOTIONS:
-                if emotion not in user_scores:
-                    user_scores[emotion] = 0.0
-                if emotion not in assistant_scores:
-                    assistant_scores[emotion] = 0.0
-
+            # Ultra-efficient version - just return copies of the dictionaries
+            user_scores = dict(self.shared_dict.get('user', {}))
+            assistant_scores = dict(self.shared_dict.get('assistant', {}))
             return user_scores, assistant_scores
 
     def get_last_update_time(self) -> float:
@@ -165,8 +153,7 @@ class SharedEmotionState:
             with self.lock:
                 self.shared_dict['assistant_is_responding'] = bool(is_responding)
                 return True
-        except Exception as e:
-            logger.error(f"Error setting assistant_is_responding flag: {e}")
+        except:
             return False
 
     def is_assistant_responding(self) -> bool:
@@ -193,8 +180,7 @@ class SharedEmotionState:
             with self.lock:
                 self.shared_dict['silence_detected'] = bool(is_silence)
                 return True
-        except Exception as e:
-            logger.error(f"Error setting silence_detected flag: {e}")
+        except:
             return False
 
     def is_silence_detected(self) -> bool:
@@ -218,8 +204,7 @@ class SharedEmotionState:
             with self.lock:
                 self.shared_dict['last_audio_activity_time'] = time.time()
                 return True
-        except Exception as e:
-            logger.error(f"Error updating last_audio_activity_time: {e}")
+        except:
             return False
 
     def get_time_since_last_audio_activity(self) -> float:
@@ -247,8 +232,7 @@ class SharedEmotionState:
             with self.lock:
                 self.shared_dict['vad_speech_detected'] = bool(speech_detected)
                 return True
-        except Exception as e:
-            logger.error(f"Error setting vad_speech_detected flag: {e}")
+        except:
             return False
 
     def is_vad_speech_detected(self) -> bool:
@@ -260,3 +244,30 @@ class SharedEmotionState:
         """
         with self.lock:
             return bool(self.shared_dict.get('vad_speech_detected', False))
+
+    def set_audio_mode(self, is_audio_mode: bool) -> bool:
+        """
+        Set the flag indicating whether we're in audio mode.
+
+        Args:
+            is_audio_mode: True if in audio mode, False if in text chat mode.
+
+        Returns:
+            bool: True if the update was successful, False otherwise.
+        """
+        try:
+            with self.lock:
+                self.shared_dict['is_audio_mode'] = bool(is_audio_mode)
+                return True
+        except:
+            return False
+
+    def is_audio_mode(self) -> bool:
+        """
+        Check if we're in audio mode.
+
+        Returns:
+            bool: True if in audio mode, False if in text chat mode.
+        """
+        with self.lock:
+            return bool(self.shared_dict.get('is_audio_mode', False))
