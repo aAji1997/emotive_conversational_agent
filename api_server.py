@@ -125,14 +125,34 @@ class WebSocketRealtimeClient(RealtimeClient):
     async def handle_event(self, event):
         """Override handle_event to emit events to the WebSocket."""
         try:
+            # Log the event before processing
+            event_type = event.get('type', 'unknown')
+            logger.info(f"WebSocketRealtimeClient received event: {event_type}")
+
+            # Log the full event for debugging
+            logger.info(f"Full event data: {event}")
+
             # First, call the parent's handle_event method
-            await super().handle_event(event)
+            try:
+                await super().handle_event(event)
+                logger.info(f"Parent handle_event completed for {event_type}")
+            except Exception as parent_error:
+                logger.error(f"Error in parent handle_event: {parent_error}")
+                import traceback
+                logger.error(f"Parent handle_event traceback: {traceback.format_exc()}")
+                # Continue to emit the event even if parent processing failed
 
             # Then emit the event to the WebSocket if not disconnected
             if not self.is_disconnected:
+                logger.info(f"Emitting event {event_type} to WebSocket")
                 emit_realtime_events(self, event)
+                logger.info(f"Event {event_type} emitted successfully")
+            else:
+                logger.warning(f"Client is disconnected, not emitting event {event_type}")
         except Exception as e:
             logger.error(f"Error in WebSocketRealtimeClient.handle_event: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             # Try to continue processing despite errors
 
     def reset_audio_state(self):
@@ -160,6 +180,25 @@ class WebSocketRealtimeClient(RealtimeClient):
 
             if not is_closed:
                 try:
+                    # Check if the event loop is closed before sending
+                    try:
+                        # Get the current event loop
+                        loop = asyncio.get_event_loop()
+                        if loop.is_closed():
+                            logger.warning("Current event loop is closed, creating a new one")
+                            # Create a new event loop
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                    except RuntimeError as e:
+                        if "no current event loop" in str(e):
+                            logger.warning("No current event loop, creating a new one")
+                            # Create a new event loop
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                        else:
+                            raise
+
+                    # Now send the event
                     await self.ws.send(json.dumps(event))
                     logger.debug(f"Sent event: {event.get('type')}")
                 except websockets.exceptions.ConnectionClosedError as e:
@@ -169,42 +208,64 @@ class WebSocketRealtimeClient(RealtimeClient):
                     # Clear the existing connection
                     self.ws = None
                     # Try to initialize audio components again (which will reconnect)
-                    reconnected = await self.initialize_audio()
+                    try:
+                        reconnected = await self.initialize_audio()
 
-                    # Check if reconnection was successful
-                    if reconnected and self.ws:
-                        # Check if it has a closed attribute and if so, check if it's closed
-                        is_reconnect_closed = False
-                        if hasattr(self.ws, 'closed'):
-                            is_reconnect_closed = self.ws.closed
+                        # Check if reconnection was successful
+                        if reconnected and self.ws:
+                            # Check if it has a closed attribute and if so, check if it's closed
+                            is_reconnect_closed = False
+                            if hasattr(self.ws, 'closed'):
+                                is_reconnect_closed = self.ws.closed
 
-                        if not is_reconnect_closed:
-                            logger.info("Successfully reconnected, retrying event send")
-                            # Try sending the event again
-                            await self.ws.send(json.dumps(event))
+                            if not is_reconnect_closed:
+                                logger.info("Successfully reconnected, retrying event send")
+                                # Try sending the event again
+                                await self.ws.send(json.dumps(event))
+                            else:
+                                logger.error("Reconnected but WebSocket is closed")
+                                # Return False instead of raising an exception
+                                return False
                         else:
-                            logger.error("Reconnected but WebSocket is closed")
-                            raise RuntimeError("Reconnected but WebSocket is closed")
-                    else:
-                        logger.error("Failed to reconnect")
-                        raise RuntimeError("Failed to reconnect to WebSocket server")
+                            logger.error("Failed to reconnect")
+                            # Return False instead of raising an exception
+                            return False
+                    except Exception as reconnect_error:
+                        logger.error(f"Error during reconnection: {reconnect_error}")
+                        # Return False instead of raising an exception
+                        return False
                 except asyncio.CancelledError:
                     logger.error("Event sending was cancelled (event loop closed)")
-                    raise  # Re-raise to allow proper handling
+                    # Return False instead of raising an exception
+                    return False
                 except Exception as e:
                     logger.error(f"Error sending event: {e}")
                     if "Event loop is closed" in str(e):
-                        logger.error("Event loop is closed, cannot send event")
-                        # Don't try to reconnect here, as we need a new event loop
-                        raise RuntimeError("Event loop is closed, cannot send event")
-                    # Re-raise to allow proper error handling by caller
-                    raise
+                        logger.error("Event loop is closed, creating a new one and retrying")
+                        try:
+                            # Create a new event loop
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+
+                            # Try sending the event again with the new loop
+                            await self.ws.send(json.dumps(event))
+                            logger.info("Successfully sent event with new event loop")
+                            return True
+                        except Exception as retry_error:
+                            logger.error(f"Error retrying with new event loop: {retry_error}")
+                            # Return False instead of raising an exception
+                            return False
+                    # Return False instead of raising an exception for other errors
+                    return False
+                return True  # Successfully sent the event
             else:
                 logger.error("Cannot send event: WebSocket is closed")
-                raise RuntimeError("WebSocket connection is closed")
+                # Return False instead of raising an exception
+                return False
         else:
             logger.error("Cannot send event: WebSocket is not connected")
-            raise RuntimeError("WebSocket connection is not established")
+            # Return False instead of raising an exception
+            return False
 
     async def _process_text_for_sentiment(self, text, source):
         """Process text for sentiment analysis.
@@ -404,6 +465,9 @@ class WebSocketRealtimeClient(RealtimeClient):
         """Initialize audio components."""
         try:
             logger.info(f"Initializing audio components for user {self.username} (ID: {self.user_id})")
+            logger.info(f"Using OpenAI API key: {self.api_key[:5]}...{self.api_key[-5:] if len(self.api_key) > 10 else ''}")
+            logger.info(f"Using model: {self.model}")
+            logger.info(f"Using voice: {self.voice}")
 
             # Connect to the OpenAI WebSocket if not already connected
             # Check if ws exists and is connected in a way that works with different WebSocket libraries
@@ -412,20 +476,26 @@ class WebSocketRealtimeClient(RealtimeClient):
             # Only check the closed attribute if it exists
             if ws_connected and hasattr(self.ws, 'closed'):
                 ws_connected = not self.ws.closed
+                logger.info(f"WebSocket exists and closed={not ws_connected}")
+            else:
+                logger.info(f"WebSocket exists={hasattr(self, 'ws')}, is not None={self.ws is not None if hasattr(self, 'ws') else False}")
 
             if not ws_connected:
                 logger.info("WebSocket not connected, attempting to connect...")
                 try:
                     # Create the URL with the model parameter in the query string
                     full_url = f"{self.url}?model={self.model}"
+                    logger.info(f"Connecting to WebSocket URL: {full_url}")
 
                     # Prepare headers dictionary
                     headers = {
                         "Authorization": f"Bearer {self.api_key}",
                         "OpenAI-Beta": "realtime=v1"
                     }
+                    logger.info(f"Using headers: {headers}")
 
                     # Connect to the WebSocket with proper parameters
+                    logger.info("Attempting to connect to WebSocket...")
                     self.ws = await websockets.connect(
                         full_url,
                         additional_headers=headers,
@@ -437,32 +507,63 @@ class WebSocketRealtimeClient(RealtimeClient):
 
                     # Configure session - this is critical for the connection to work properly
                     try:
-                        # Use the session configuration defined in __init__
-                        # Make sure the voice is explicitly set to shimmer
-                        self.session_config["voice"] = "shimmer"
+                        # Log the current session configuration for debugging
+                        logger.info(f"Current session configuration: {self.session_config}")
+
+                        # Create a fresh session configuration to ensure all required parameters are set
+                        fresh_session_config = {
+                            "modalities": ["audio", "text"],
+                            "voice": "shimmer",  # Explicitly set to shimmer
+                            "input_audio_format": "pcm16",
+                            "output_audio_format": "pcm16",
+                            "instructions": f"You are a helpful AI assistant with access to memories from previous conversations. {getattr(self, 'username', '')} These memories will be provided to you as system messages. Use these memories to provide personalized and contextually relevant responses. When appropriate, reference these past interactions naturally. Respond in a clear and engaging way.",
+                            "turn_detection": self.VAD_config,  # Use the VAD configuration defined above
+                            "input_audio_transcription": {
+                                "model": "whisper-1"
+                            },
+                            "temperature": 0.7
+                        }
+
+                        # Update our session config with the fresh one
+                        self.session_config = fresh_session_config
+
+                        # Log the new session configuration
+                        logger.info(f"New session configuration: {self.session_config}")
+                        logger.info(f"VAD configuration: {self.VAD_config}")
 
                         # Send the session configuration
+                        logger.info("Sending session.update event to OpenAI WebSocket...")
                         await self.send_event({
                             "type": "session.update",
                             "session": self.session_config
                         })
                         logger.info(f"Session configuration sent with voice={self.session_config['voice']}")
 
+                        # Log that we're waiting for acknowledgment
+                        logger.info("Waiting for session acknowledgment...")
+
                         # Wait for acknowledgment
                         try:
+                            logger.info("Waiting for session acknowledgment response...")
                             session_ack = await asyncio.wait_for(self.ws.recv(), timeout=5)
+                            logger.info(f"Received session acknowledgment: {session_ack[:100]}...")
+
                             session_ack_json = json.loads(session_ack)
+                            logger.info(f"Parsed session acknowledgment JSON: {session_ack_json}")
 
                             # Check for session.created response (initial connection)
                             if session_ack_json.get("type") == "session.created":
                                 session_data = session_ack_json.get("session", {})
                                 voice = session_data.get("voice")
                                 session_id = session_data.get("id")
+                                logger.info(f"Received session.created with data: {session_data}")
 
                                 # Store the session ID for future reference
                                 if session_id:
                                     self.session_id = session_id
                                     logger.info(f"Session ID: {session_id}")
+                                else:
+                                    logger.warning("No session ID received in session.created event")
 
                                 if voice == "shimmer":
                                     logger.info(f"Session successfully initialized with voice: {voice}")
@@ -475,22 +576,34 @@ class WebSocketRealtimeClient(RealtimeClient):
                                         "type": "session.update",
                                         "session": {"voice": "shimmer"}
                                     })
+                                    logger.info("Sent voice update request")
 
                                     # Wait for the update response
                                     try:
+                                        logger.info("Waiting for voice update acknowledgment...")
                                         update_ack = await asyncio.wait_for(self.ws.recv(), timeout=3)
+                                        logger.info(f"Received voice update acknowledgment: {update_ack[:100]}...")
+
                                         update_ack_json = json.loads(update_ack)
+                                        logger.info(f"Parsed voice update acknowledgment JSON: {update_ack_json}")
+
                                         if update_ack_json.get("type") == "session.updated":
                                             logger.info("Voice successfully updated to 'shimmer'")
                                         else:
                                             logger.warning(f"Unexpected response to voice update: {update_ack_json}")
                                     except Exception as e:
                                         logger.warning(f"Error waiting for voice update response: {e}")
+                                        logger.warning(f"Error details: {str(e)}")
                             # Check for session.updated response (after update)
                             elif session_ack_json.get("type") == "session.updated":
                                 logger.info("Session successfully updated")
+                                # Check if the voice was set correctly
+                                session_data = session_ack_json.get("session", {})
+                                voice = session_data.get("voice")
+                                logger.info(f"Updated session voice: {voice}")
                             else:
-                                logger.warning(f"Unexpected session response: {session_ack_json}")
+                                logger.warning(f"Unexpected session response type: {session_ack_json.get('type')}")
+                                logger.warning(f"Full unexpected session response: {session_ack_json}")
 
                                 # Try to update the session again with just the voice parameter
                                 logger.info("Attempting to update session with minimal configuration...")
@@ -498,16 +611,23 @@ class WebSocketRealtimeClient(RealtimeClient):
                                     "type": "session.update",
                                     "session": {"voice": "shimmer"}
                                 })
+                                logger.info("Sent minimal voice update request")
                         except asyncio.TimeoutError:
                             logger.warning("No session acknowledgment received within timeout")
+                            logger.warning("This may indicate a connection issue with the OpenAI API")
+
                             # Try a simpler update with just the voice parameter
                             logger.info("Attempting voice-only session update after timeout...")
                             await self.send_event({
                                 "type": "session.update",
                                 "session": {"voice": "shimmer"}
                             })
+                            logger.info("Sent voice-only update request after timeout")
                         except Exception as e:
                             logger.error(f"Error receiving session acknowledgment: {e}")
+                            logger.error(f"Error details: {str(e)}")
+                            import traceback
+                            logger.error(f"Traceback: {traceback.format_exc()}")
                             # Continue anyway as some implementations might not send an acknowledgment
 
                     except Exception as e:
@@ -522,6 +642,9 @@ class WebSocketRealtimeClient(RealtimeClient):
                     # Only check the closed attribute if it exists
                     if ws_connected and hasattr(self.ws, 'closed'):
                         ws_connected = not self.ws.closed
+                        logger.info(f"WebSocket connection status after session setup: closed={not ws_connected}")
+                    else:
+                        logger.info(f"WebSocket connection status after session setup: exists={hasattr(self, 'ws')}, not None={self.ws is not None if hasattr(self, 'ws') else False}")
 
                     if not ws_connected:
                         logger.error("Failed to establish WebSocket connection")
@@ -529,46 +652,73 @@ class WebSocketRealtimeClient(RealtimeClient):
                     logger.info("WebSocket connection established successfully")
                 except Exception as connect_error:
                     logger.error(f"Error connecting to WebSocket: {connect_error}")
+                    logger.error(f"Error details: {str(connect_error)}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     return False
             else:
                 logger.info("WebSocket already connected")
+                logger.info(f"Using existing WebSocket connection: {self.ws}")
 
             # Reset audio state
+            logger.info("Resetting audio state...")
             self.reset_audio_state()
+            logger.info("Audio state reset complete")
 
             # Check if the WebSocket is still connected before sending a test event
             ws_connected = hasattr(self, 'ws') and self.ws is not None
             # Only check the closed attribute if it exists
             if ws_connected and hasattr(self.ws, 'closed'):
                 ws_connected = not self.ws.closed
+                logger.info(f"WebSocket connection status before test event: closed={not ws_connected}")
+            else:
+                logger.info(f"WebSocket connection status before test event: exists={hasattr(self, 'ws')}, not None={self.ws is not None if hasattr(self, 'ws') else False}")
 
             if ws_connected:
                 try:
                     # Send a small test event to ensure the connection is working
-                    logger.info("Sending test event to WebSocket")
+                    logger.info("Sending test event (ping) to WebSocket")
                     await self.send_event({"type": "ping"})
                     logger.info("Test event sent successfully")
                 except websockets.exceptions.ConnectionClosedError as e:
                     logger.error(f"Connection closed while sending test event: {e}")
+                    logger.error(f"Error details: {str(e)}")
                     # Try to reconnect
                     logger.info("Connection closed, attempting to reconnect...")
                     self.ws = None  # Clear the existing connection
+                    logger.info("Cleared existing connection, attempting recursive initialization")
                     return await self.initialize_audio()  # Recursive call to retry initialization
                 except Exception as event_error:
                     logger.error(f"Error sending test event: {event_error}")
+                    logger.error(f"Error details: {str(event_error)}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
                     # Don't fail the whole initialization if just the test event fails
                     # The connection might still be usable
+                    logger.info("Continuing despite test event failure")
             else:
                 logger.warning("WebSocket not connected, skipping test event")
 
             # Mark audio as ready
             self.audio_ready = True
             logger.info(f"Audio components initialized successfully for user {self.username}")
+            logger.info(f"Setting audio_ready=True")
             return True
         except Exception as e:
             logger.error(f"Error initializing audio components: {e}")
+            logger.error(f"Error details: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
             # Set audio_ready to false to ensure we don't think it's ready
             self.audio_ready = False
+            logger.info("Setting audio_ready=False due to initialization error")
+
+            # Log additional state information for debugging
+            logger.error(f"WebSocket state: exists={hasattr(self, 'ws')}, not None={self.ws is not None if hasattr(self, 'ws') else False}")
+            if hasattr(self, 'ws') and self.ws is not None and hasattr(self.ws, 'closed'):
+                logger.error(f"WebSocket closed: {self.ws.closed}")
+
             return False
 
 # Set up logging
@@ -629,6 +779,240 @@ clients = {}
 def health_check():
     """Health check endpoint."""
     return jsonify({"status": "ok"})
+
+@app.route('/api/debug/openai_status', methods=['GET'])
+def openai_status():
+    """Debug endpoint to check OpenAI API status."""
+    try:
+        # Check if the OpenAI API key is set
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return jsonify({
+                'status': 'error',
+                'message': 'OpenAI API key not set'
+            })
+
+        # Check if we can create a simple client
+        import openai
+        client = openai.OpenAI(api_key=api_key)
+
+        # Try to make a simple API call
+        models = client.models.list()
+        model_names = [model.id for model in models.data]
+
+        # Check if we have access to the required models
+        has_whisper = 'whisper-1' in model_names
+        has_gpt4 = any('gpt-4' in model for model in model_names)
+
+        return jsonify({
+            'status': 'ok',
+            'message': 'OpenAI API is accessible',
+            'has_whisper': has_whisper,
+            'has_gpt4': has_gpt4,
+            'models': model_names[:5]  # Just show a few models to avoid a huge response
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error checking OpenAI API: {str(e)}'
+        })
+
+@app.route('/api/debug/test_realtime', methods=['POST'])
+def test_realtime_api():
+    """Debug endpoint to test the OpenAI Realtime API directly."""
+    try:
+        # Get the test message from the request
+        data = request.json
+        test_message = data.get('message', 'Hello, this is a test message.')
+        user_id = data.get('user_id', '')
+
+        # Create a temporary client for testing
+        import asyncio
+        import websockets
+        import json
+        import base64
+        import os
+
+        # Get the OpenAI API key
+        api_key = os.getenv('OPENAI_API_KEY')
+        if not api_key:
+            return jsonify({
+                'status': 'error',
+                'message': 'OpenAI API key not set'
+            })
+
+        # Define an async function to test the connection
+        async def test_connection():
+            # Connect to the OpenAI Realtime API
+            url = "wss://api.openai.com/v1/audio/speech"
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "OpenAI-Beta": "realtime=v1"
+            }
+
+            try:
+                # Connect to the WebSocket
+                ws = await websockets.connect(
+                    f"{url}?model=tts-1",
+                    additional_headers=headers,
+                    ping_interval=20,
+                    ping_timeout=60
+                )
+
+                # Configure the session
+                await ws.send(json.dumps({
+                    "type": "session.update",
+                    "session": {
+                        "voice": "shimmer",
+                        "modalities": ["audio", "text"],
+                        "input_audio_format": "pcm16",
+                        "output_audio_format": "pcm16",
+                        "instructions": "You are a helpful AI assistant.",
+                        "turn_detection": {
+                            "type": "server_vad",
+                            "threshold": 0.3,
+                            "prefix_padding_ms": 500,
+                            "silence_duration_ms": 1000,
+                            "create_response": True,
+                            "interrupt_response": True
+                        }
+                    }
+                }))
+
+                # Wait for session acknowledgment
+                session_ack = await ws.recv()
+                session_ack_json = json.loads(session_ack)
+
+                # Send a test audio message
+                await ws.send(json.dumps({
+                    "type": "input_audio_buffer.append",
+                    "audio": base64.b64encode(b"test audio data").decode('utf-8')
+                }))
+
+                # Commit the audio buffer
+                await ws.send(json.dumps({
+                    "type": "input_audio_buffer.commit"
+                }))
+
+                # Create a response
+                await ws.send(json.dumps({
+                    "type": "response.create"
+                }))
+
+                # Wait for responses
+                responses = []
+                for _ in range(10):  # Wait for up to 10 messages
+                    try:
+                        response = await asyncio.wait_for(ws.recv(), timeout=2)
+                        responses.append(json.loads(response))
+
+                        # If we get a response.done event, we're done
+                        if json.loads(response).get('type') == 'response.done':
+                            break
+                    except asyncio.TimeoutError:
+                        break
+
+                # Close the connection
+                await ws.close()
+
+                return {
+                    'status': 'success',
+                    'message': 'Successfully tested OpenAI Realtime API',
+                    'responses': responses
+                }
+            except Exception as e:
+                return {
+                    'status': 'error',
+                    'message': f'Error testing OpenAI Realtime API: {str(e)}'
+                }
+
+        # Run the async function
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        result = loop.run_until_complete(test_connection())
+        loop.close()
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error testing OpenAI Realtime API: {str(e)}'
+        })
+
+@app.route('/api/debug/websocket_status', methods=['GET'])
+def websocket_status():
+    """Debug endpoint to check WebSocket connection status for all clients."""
+    try:
+        # Get user_id from query parameters
+        user_id = request.args.get('user_id', '')
+
+        # If user_id is provided, check only that client
+        if user_id and user_id in clients:
+            client = clients[user_id]
+            ws_connected = hasattr(client, 'ws') and client.ws is not None
+            is_closed = False
+            if ws_connected and hasattr(client.ws, 'closed'):
+                is_closed = client.ws.closed
+
+            return jsonify({
+                'status': 'ok',
+                'client_info': {
+                    'user_id': user_id,
+                    'username': getattr(client, 'username', 'unknown'),
+                    'ws_exists': hasattr(client, 'ws'),
+                    'ws_not_none': client.ws is not None if hasattr(client, 'ws') else False,
+                    'ws_closed': is_closed,
+                    'is_disconnected': getattr(client, 'is_disconnected', False),
+                    'is_responding': getattr(client, 'is_responding', False),
+                    'audio_ready': getattr(client, 'audio_ready', False),
+                    'session_id': getattr(client, 'session_id', None)
+                }
+            })
+
+        # Otherwise, check all clients
+        client_statuses = {}
+        for uid, client in clients.items():
+            ws_connected = hasattr(client, 'ws') and client.ws is not None
+            is_closed = False
+            if ws_connected and hasattr(client.ws, 'closed'):
+                is_closed = client.ws.closed
+
+            client_statuses[uid] = {
+                'username': getattr(client, 'username', 'unknown'),
+                'ws_exists': hasattr(client, 'ws'),
+                'ws_not_none': client.ws is not None if hasattr(client, 'ws') else False,
+                'ws_closed': is_closed,
+                'is_disconnected': getattr(client, 'is_disconnected', False),
+                'is_responding': getattr(client, 'is_responding', False),
+                'audio_ready': getattr(client, 'audio_ready', False),
+                'session_id': getattr(client, 'session_id', None)
+            }
+
+        # Also check Socket.IO sessions
+        socketio_sessions = {}
+        if hasattr(handle_initialize_stream, 'user_sessions'):
+            for sid, session_data in handle_initialize_stream.user_sessions.items():
+                client = session_data.get('client')
+                if client:
+                    socketio_sessions[sid] = {
+                        'user_id': getattr(client, 'user_id', 'unknown'),
+                        'username': getattr(client, 'username', 'unknown'),
+                        'is_responding': getattr(client, 'is_responding', False),
+                        'audio_ready': getattr(client, 'audio_ready', False)
+                    }
+
+        return jsonify({
+            'status': 'ok',
+            'client_count': len(clients),
+            'clients': client_statuses,
+            'socketio_session_count': len(socketio_sessions) if hasattr(handle_initialize_stream, 'user_sessions') else 0,
+            'socketio_sessions': socketio_sessions
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'Error checking WebSocket status: {str(e)}'
+        })
 
 @app.route('/api/pre-initialize', methods=['POST'])
 def pre_initialize():
@@ -1843,6 +2227,109 @@ def handle_test_openai_connection():
         logger.error(traceback.format_exc())
         emit('error', {'message': f'Server error: {str(e)}'})
 
+@socketio.on('reset_client_state')
+def handle_reset_client_state():
+    """Reset the client state completely."""
+    try:
+        logger.info(f"Resetting client state for {request.sid}")
+
+        # Get session data
+        if not hasattr(handle_initialize_stream, 'user_sessions'):
+            logger.error("No user sessions dictionary found")
+            emit('error', {'message': 'No sessions initialized'})
+            return
+
+        session_data = handle_initialize_stream.user_sessions.get(request.sid)
+        if not session_data:
+            logger.error(f"No session data found for {request.sid}")
+            emit('error', {'message': 'Session not initialized'})
+            return
+
+        client = session_data.get('client')
+        if not client:
+            logger.error(f"No client found in session data for {request.sid}")
+            emit('error', {'message': 'Client not initialized'})
+            return
+
+        # Store the sid
+        sid = request.sid
+
+        # Reset client state flags
+        client.is_responding = False
+        if hasattr(client, 'response_complete_event'):
+            client.response_complete_event.set()
+
+        # Reset any other state flags
+        client.audio_ready = False
+
+        # Check if the WebSocket is closed or disconnected
+        ws_closed = not hasattr(client, 'ws') or client.ws is None or getattr(client, 'is_disconnected', False)
+        if hasattr(client, 'ws') and client.ws is not None and hasattr(client.ws, 'closed'):
+            ws_closed = ws_closed or client.ws.closed
+
+        # If WebSocket is closed, try to reconnect
+        if ws_closed:
+            logger.warning(f"WebSocket is closed for {sid}, attempting to reconnect")
+            socketio.emit('debug', {'message': 'WebSocket is closed, attempting to reconnect'}, room=sid)
+
+            # Create a new event loop for reconnection
+            reconnect_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(reconnect_loop)
+
+            try:
+                # Try to reconnect
+                reconnected = reconnect_loop.run_until_complete(client.initialize_audio())
+                reconnect_loop.close()
+
+                if not reconnected:
+                    logger.error(f"Failed to reconnect WebSocket for {sid}")
+                    socketio.emit('debug', {'message': 'Failed to reconnect WebSocket'}, room=sid)
+                    emit('error', {'message': 'Failed to reconnect WebSocket'})
+                    return
+                logger.info(f"Successfully reconnected WebSocket for {sid}")
+                socketio.emit('debug', {'message': 'Successfully reconnected WebSocket'}, room=sid)
+            except Exception as reconnect_error:
+                logger.error(f"Error reconnecting WebSocket: {reconnect_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                socketio.emit('debug', {'message': f'Error reconnecting WebSocket: {str(reconnect_error)}'}, room=sid)
+                emit('error', {'message': f'Error reconnecting WebSocket: {str(reconnect_error)}'})
+
+                if 'reconnect_loop' in locals() and reconnect_loop.is_running():
+                    reconnect_loop.close()
+                return
+
+        # Send a ping to test the connection
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        try:
+            # Send a ping message
+            loop.run_until_complete(client.send_event({
+                "type": "ping"
+            }))
+
+            # Close the loop
+            loop.close()
+
+            logger.info(f"Client state reset successfully for {sid}")
+            emit('debug', {'status': 'success', 'message': 'Client state reset successfully'})
+        except Exception as e:
+            logger.error(f"Error testing connection after reset: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            emit('error', {'message': f'Error testing connection after reset: {str(e)}'})
+
+            # Close the loop if it's still running
+            if 'loop' in locals() and loop.is_running():
+                loop.close()
+    except Exception as e:
+        logger.error(f"Unexpected error in handle_reset_client_state: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        emit('error', {'message': f'Server error: {str(e)}'})
+
+
 @socketio.on('check_connection')
 def handle_check_connection():
     """Check the WebSocket connection status."""
@@ -2018,21 +2505,40 @@ def handle_initialize_stream(data):
                 logger.info(f"Connecting client to OpenAI WebSocket synchronously")
 
                 # Create a new event loop for this thread
+                logger.info(f"Creating new event loop for audio initialization for user {username} (ID: {user_id})")
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                logger.info("Created new event loop for audio initialization")
 
                 # Initialize audio components (this will connect to the WebSocket)
+                logger.info("Calling client.initialize_audio()")
                 audio_success = loop.run_until_complete(client.initialize_audio())
+                logger.info(f"client.initialize_audio() returned: {audio_success}")
 
                 # Close the loop
                 loop.close()
+                logger.info("Closed event loop after audio initialization")
 
                 if audio_success:
                     logger.info(f"Successfully connected client to OpenAI WebSocket")
+
+                    # Log client state after successful initialization
+                    logger.info(f"Client state after initialization: audio_ready={getattr(client, 'audio_ready', False)}, session_id={getattr(client, 'session_id', None)}")
+
+                    # Log WebSocket state
+                    ws_connected = hasattr(client, 'ws') and client.ws is not None
+                    is_closed = False
+                    if ws_connected and hasattr(client.ws, 'closed'):
+                        is_closed = client.ws.closed
+                    logger.info(f"WebSocket state after initialization: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, 'is_disconnected', False)}")
+
                     # Emit success after the connection is established
+                    logger.info("Emitting 'stream_initialized' event with success status")
                     emit('stream_initialized', {'status': 'success'})
+                    logger.info("'stream_initialized' event emitted successfully")
                 else:
                     logger.error(f"Failed to connect client to OpenAI WebSocket")
+                    logger.error(f"Client state after failed initialization: audio_ready={getattr(client, 'audio_ready', False)}")
                     emit('error', {'message': 'Failed to connect to voice service. Please try again.'})
                     return
             else:
@@ -2041,43 +2547,85 @@ def handle_initialize_stream(data):
                 emit('stream_initialized', {'status': 'success'})
         except Exception as e:
             logger.error(f"Error connecting client to OpenAI WebSocket: {e}")
+            logger.error(f"Error details: {str(e)}")
             import traceback
-            logger.error(traceback.format_exc())
+            logger.error(f"Traceback: {traceback.format_exc()}")
+
+            # Log client state after error
+            if 'client' in locals():
+                logger.error(f"Client state after error: audio_ready={getattr(client, 'audio_ready', False)}, session_id={getattr(client, 'session_id', None)}")
+
+                # Log WebSocket state
+                ws_connected = hasattr(client, 'ws') and client.ws is not None
+                is_closed = False
+                if ws_connected and hasattr(client.ws, 'closed'):
+                    is_closed = client.ws.closed
+                logger.error(f"WebSocket state after error: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, 'is_disconnected', False)}")
+
             try:
+                logger.info("Emitting error event to client")
                 emit('error', {'message': f'Error connecting to voice service: {str(e)}'})
+                logger.info("Error event emitted successfully")
             except Exception as emit_error:
                 logger.error(f"Error sending error message: {emit_error}")
+                logger.error(f"Error details: {str(emit_error)}")
 
     except Exception as e:
         logger.error(f"Error in handle_initialize_stream: {e}")
+        logger.error(f"Error details: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
         try:
+            logger.info("Emitting error event to client")
             emit('error', {'message': f'Server error: {str(e)}'})
+            logger.info("Error event emitted successfully")
         except Exception as emit_error:
             logger.error(f"Error sending error message: {emit_error}")
+            logger.error(f"Error details: {str(emit_error)}")
 
 @socketio.on('audio_chunk')
 def handle_audio_chunk(data):
     """Handle incoming audio chunks from the client."""
     try:
         # Log the receipt of audio chunk
-        logger.debug(f"Received audio chunk from {request.sid}")
+        logger.info(f"Received audio chunk from {request.sid}")
 
         # Get session data from our dictionary
         if not hasattr(handle_initialize_stream, 'user_sessions'):
             logger.error("No user sessions dictionary found")
             emit('error', {'message': 'No sessions initialized'})
+            emit('debug', {'message': 'No sessions initialized'})
             return
 
         session_data = handle_initialize_stream.user_sessions.get(request.sid)
         if not session_data:
             logger.error(f"No session data found for {request.sid}")
             emit('error', {'message': 'Session not initialized'})
+            emit('debug', {'message': 'Session not initialized'})
             return
+
+        # Add more detailed logging
+        logger.info(f"Processing audio chunk from {request.sid}, session data: {session_data.get('user_id')}")
+        emit('debug', {'message': f'Processing audio chunk, user: {session_data.get("user_id")}'})
+        emit('audio_debug', {'message': f'Processing audio chunk, user: {session_data.get("user_id")}'})
+
+        # Log WebSocket connection status
+        client = session_data.get('client')
+        if client:
+            ws_connected = hasattr(client, 'ws') and client.ws is not None
+            is_closed = False
+            if ws_connected and hasattr(client.ws, 'closed'):
+                is_closed = client.ws.closed
+            logger.info(f"WebSocket status: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, 'is_disconnected', False)}")
+            emit('debug', {'message': f'WebSocket status: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, "is_disconnected", False)}'})
+            emit('audio_debug', {'message': f'WebSocket status: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, "is_disconnected", False)}'})
 
         client = session_data.get('client')
         if not client:
             logger.error(f"No client found in session data for {request.sid}")
             emit('error', {'message': 'Client not initialized'})
+            emit('debug', {'message': 'Client not initialized'})
             return
 
         # Get the audio chunk from the data
@@ -2085,10 +2633,46 @@ def handle_audio_chunk(data):
         if not audio_chunk:
             logger.error("No audio data provided in chunk")
             emit('error', {'message': 'No audio data provided'})
+            emit('debug', {'message': 'No audio data provided in chunk'})
             return
 
-        # Log audio chunk size for debugging
-        logger.debug(f"Audio chunk size: {len(audio_chunk)} bytes")
+        # Check if the audio chunk is a base64 string or an array
+        is_base64 = isinstance(audio_chunk, str)
+
+        # Log audio chunk size and format for debugging
+        chunk_size = len(audio_chunk) if audio_chunk else 0
+        logger.info(f"Audio chunk size: {chunk_size} bytes, format: {'base64' if is_base64 else 'array'}")
+        emit('debug', {'message': f'Received audio chunk: {chunk_size} bytes, format: {"base64" if is_base64 else "array"}'})
+        emit('audio_debug', {'message': f'Received audio chunk: {chunk_size} bytes, format: {"base64" if is_base64 else "array"}'})
+
+        # If the audio chunk is a base64 string, decode it
+        if is_base64:
+            try:
+                # Decode base64 to binary
+                binary_data = base64.b64decode(audio_chunk)
+                logger.info(f"Decoded base64 data, size: {len(binary_data)} bytes")
+                emit('debug', {'message': f'Decoded base64 data, size: {len(binary_data)} bytes'})
+                emit('audio_debug', {'message': f'Decoded base64 data, size: {len(binary_data)} bytes'})
+
+                # Convert binary data to PCM array
+                # Assuming 16-bit PCM data (2 bytes per sample)
+                pcm_array = []
+                for i in range(0, len(binary_data), 2):
+                    if i + 1 < len(binary_data):
+                        # Convert 2 bytes to a 16-bit integer (little endian)
+                        sample = int.from_bytes(binary_data[i:i+2], byteorder='little', signed=True)
+                        pcm_array.append(sample)
+
+                # Replace the audio chunk with the PCM array
+                audio_chunk = pcm_array
+                logger.info(f"Converted base64 to PCM array, length: {len(pcm_array)}")
+                emit('debug', {'message': f'Converted base64 to PCM array, length: {len(pcm_array)}'})
+                emit('audio_debug', {'message': f'Converted base64 to PCM array, length: {len(pcm_array)}'})
+            except Exception as e:
+                logger.error(f"Error decoding base64 audio: {e}")
+                emit('error', {'message': f'Error decoding audio: {str(e)}'})
+                emit('debug', {'message': f'Error decoding audio: {str(e)}'})
+                return
 
         # Check if client has a WebSocket connection
         ws_connected = hasattr(client, 'ws') and client.ws is not None
@@ -2132,6 +2716,8 @@ def handle_audio_chunk(data):
                 if reconnected:
                     logger.info("Successfully reconnected WebSocket")
                     # Don't emit an error, just continue with the audio chunk
+                    # Send a notification to the client that we've reconnected
+                    socketio.emit('connection_status', {'status': 'reconnected'}, room=request.sid)
                 else:
                     logger.error("Failed to reconnect WebSocket")
                     emit('error', {'message': 'Voice service not connected and reconnection failed'})
@@ -2143,8 +2729,24 @@ def handle_audio_chunk(data):
 
         # Process the audio chunk
         try:
-            # Decode the base64 audio chunk
-            audio_data = base64.b64decode(audio_chunk)
+            # Handle the audio chunk based on its type
+            if isinstance(audio_chunk, list):
+                # Convert PCM array to bytes for processing
+                # Check if it's a NumPy array or a regular Python list
+                if hasattr(audio_chunk, 'tobytes'):
+                    # It's a NumPy array, use tobytes method
+                    audio_data = audio_chunk.tobytes()
+                else:
+                    # It's a regular Python list, convert each sample
+                    audio_bytes = b''
+                    for sample in audio_chunk:
+                        audio_bytes += int(sample).to_bytes(2, byteorder='little', signed=True)
+                    audio_data = audio_bytes
+                logger.info(f"Using PCM array as audio data: {len(audio_data)} bytes")
+            else:
+                # Decode the base64 audio chunk
+                audio_data = base64.b64decode(audio_chunk)
+                logger.info(f"Decoded base64 audio chunk: {len(audio_data)} bytes")
 
             # Check for silence and update the shared emotion state
             client._check_for_silence(audio_data)
@@ -2153,13 +2755,16 @@ def handle_audio_chunk(data):
             # This avoids the event loop issues
             if not hasattr(client, 'audio_queue'):
                 client.audio_queue = []
+                logger.info("Created new audio queue for client")
 
             # Add the chunk to the queue
             client.audio_queue.append(audio_chunk)
+            logger.info(f"Added chunk to queue, queue size: {len(client.audio_queue)}")
 
             # Start a background task to process the queue if not already running
             if not hasattr(client, 'is_processing_queue') or not client.is_processing_queue:
                 client.is_processing_queue = True
+                logger.info("Starting background task to process audio queue")
 
                 # Define and start the background task in one step
                 socketio.start_background_task(
@@ -2173,10 +2778,11 @@ def handle_audio_chunk(data):
             if not hasattr(client, 'last_commit_time'):
                 client.last_commit_time = 0
 
-            # Auto-commit if it's been more than 1 second since the last commit
+            # Auto-commit if it's been more than 0.5 seconds since the last commit
             # This ensures the server processes audio even if the client doesn't explicitly commit
+            # Reduced from 1.0 to 0.5 seconds for more responsive real-time conversation
             current_time = time.time()
-            if current_time - getattr(client, 'last_commit_time', 0) > 1.0:
+            if current_time - getattr(client, 'last_commit_time', 0) > 0.5:
                 # We'll do this in a background task to avoid blocking
                 socketio.start_background_task(
                     auto_commit_audio,
@@ -2221,93 +2827,260 @@ def handle_audio_chunk(data):
 # Define the background task function outside the handler
 def process_audio_queue_task(client, logger):
     try:
+        logger.info(f"Starting audio queue processing task, queue size: {len(client.audio_queue) if hasattr(client, 'audio_queue') else 0}")
+
         # Process all chunks in the queue
         while hasattr(client, 'audio_queue') and client.audio_queue:
             # Get the next chunk
             chunk = client.audio_queue.pop(0)
+            logger.info(f"Processing audio chunk, remaining queue size: {len(client.audio_queue)}")
+
+            # Check WebSocket connection status
+            ws_connected = hasattr(client, 'ws') and client.ws is not None
+            is_closed = False
+            if ws_connected and hasattr(client.ws, 'closed'):
+                is_closed = client.ws.closed
+            is_disconnected = getattr(client, 'is_disconnected', False)
+
+            logger.info(f"WebSocket status before sending: connected={ws_connected}, closed={is_closed}, disconnected={is_disconnected}")
 
             # Send the audio chunk to the OpenAI WebSocket
-            if hasattr(client, 'ws') and client.ws is not None and not getattr(client, 'is_disconnected', False):
+            if ws_connected and not is_closed and not is_disconnected:
                 try:
                     # Create a new event loop for this operation
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    # Send the event using the client's send_event method
-                    loop.run_until_complete(client.send_event({
-                        "type": "input_audio_buffer.append",
-                        "audio": chunk
-                    }))
+                    logger.info("Created new event loop for sending audio chunk")
+
+                    # Check if the chunk is a list/array or a base64 string
+                    is_array = isinstance(chunk, list)
+
+                    if is_array:
+                        # Convert the PCM array to base64 for OpenAI WebSocket
+                        # First convert to bytes
+                        if hasattr(chunk, 'tobytes'):
+                            # It's a NumPy array, use tobytes method
+                            pcm_bytes = chunk.tobytes()
+                        else:
+                            # It's a regular Python list, convert each sample
+                            pcm_bytes = b''
+                            for sample in chunk:
+                                # Convert each sample to 2 bytes (16-bit PCM)
+                                pcm_bytes += int(sample).to_bytes(2, byteorder='little', signed=True)
+
+                        # Then encode to base64
+                        base64_audio = base64.b64encode(pcm_bytes).decode('utf-8')
+                        logger.info(f"Converted PCM array to base64, length: {len(base64_audio)}")
+
+                        # Send the event using the client's send_event method
+                        logger.info("Sending input_audio_buffer.append event to OpenAI WebSocket with converted PCM array")
+                        send_result = loop.run_until_complete(client.send_event({
+                            "type": "input_audio_buffer.append",
+                            "audio": base64_audio
+                        }))
+
+                        # Check if the send was successful
+                        if not send_result:
+                            logger.error("Failed to send audio chunk to OpenAI WebSocket")
+                            # Try to reconnect the WebSocket
+                            try:
+                                logger.info("Attempting to reconnect WebSocket...")
+                                reconnected = loop.run_until_complete(client.initialize_audio())
+                                if not reconnected:
+                                    logger.error("Failed to reconnect WebSocket, skipping chunk")
+                                    continue  # Skip to the next chunk
+                            except Exception as reconnect_error:
+                                logger.error(f"Error reconnecting WebSocket: {reconnect_error}")
+                                continue  # Skip to the next chunk
+                    else:
+                        # Send the event using the client's send_event method
+                        logger.info("Sending input_audio_buffer.append event to OpenAI WebSocket with base64 audio")
+                        send_result = loop.run_until_complete(client.send_event({
+                            "type": "input_audio_buffer.append",
+                            "audio": chunk
+                        }))
+
+                        # Check if the send was successful
+                        if not send_result:
+                            logger.error("Failed to send audio chunk to OpenAI WebSocket")
+                            # Try to reconnect the WebSocket
+                            try:
+                                logger.info("Attempting to reconnect WebSocket...")
+                                reconnected = loop.run_until_complete(client.initialize_audio())
+                                if not reconnected:
+                                    logger.error("Failed to reconnect WebSocket, skipping chunk")
+                                    continue  # Skip to the next chunk
+                            except Exception as reconnect_error:
+                                logger.error(f"Error reconnecting WebSocket: {reconnect_error}")
+                                continue  # Skip to the next chunk
+
+                    logger.info("Successfully sent audio chunk to OpenAI WebSocket")
 
                     # Close the loop
                     loop.close()
-
-                    logger.debug("Sent audio chunk to OpenAI WebSocket")
+                    logger.info("Closed event loop after sending audio chunk")
                 except Exception as e:
                     logger.error(f"Error sending audio chunk: {e}")
                     import traceback
                     logger.error(traceback.format_exc())
+            else:
+                logger.error(f"Cannot send audio chunk: WebSocket not connected or closed. connected={ws_connected}, closed={is_closed}, disconnected={is_disconnected}")
 
         # Reset the processing flag
         client.is_processing_queue = False
+        logger.info("Audio queue processing complete, reset processing flag")
     except Exception as e:
         logger.error(f"Error processing audio queue: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         client.is_processing_queue = False
+        logger.info("Reset processing flag due to error")
 
 # Function to automatically commit audio for real-time conversation
 def auto_commit_audio(client, sid, logger):
     try:
+        # Log the current state for debugging
+        logger.info(f"Auto-commit audio called for {sid}, is_responding={getattr(client, 'is_responding', False)}")
+
         # Only proceed if the client is not already responding
         if getattr(client, 'is_responding', False):
-            logger.debug("Client is already responding, skipping auto-commit")
+            logger.info("Client is already responding, skipping auto-commit")
             return
 
         # Update the last commit time
         client.last_commit_time = time.time()
+        logger.info(f"Updated last_commit_time to {client.last_commit_time}")
+
+        # Check WebSocket connection in detail
+        ws_connected = hasattr(client, 'ws') and client.ws is not None
+        is_closed = False
+        if ws_connected and hasattr(client.ws, 'closed'):
+            is_closed = client.ws.closed
+        is_disconnected = getattr(client, 'is_disconnected', False)
+
+        logger.info(f"WebSocket state: connected={ws_connected}, closed={is_closed}, disconnected={is_disconnected}")
+
+        # Log additional client state
+        logger.info(f"Client state: audio_ready={getattr(client, 'audio_ready', False)}, session_id={getattr(client, 'session_id', None)}")
 
         # Send the commit event using an event loop
-        if hasattr(client, 'ws') and client.ws is not None and not getattr(client, 'is_disconnected', False):
+        if ws_connected and not is_disconnected:
             try:
                 # Create a new event loop for this operation
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
 
                 # Send the commit event using the client's send_event method
-                loop.run_until_complete(client.send_event({
+                logger.info(f"Sending input_audio_buffer.commit event for {sid}")
+                commit_result = loop.run_until_complete(client.send_event({
                     "type": "input_audio_buffer.commit"
                 }))
+
+                # Check if the commit was successful
+                if not commit_result:
+                    logger.error(f"Failed to commit audio buffer for {sid}")
+                    return
+
                 logger.info(f"Auto-committed audio buffer for {sid}")
 
-                # Add a small delay to ensure the commit is processed
-                time.sleep(0.2)
+                # Add a smaller delay to ensure the commit is processed but keep things responsive
+                # Reduced from 0.2 to 0.1 seconds for more responsive real-time conversation
+                time.sleep(0.1)
 
-                # With server-side VAD, response.create should happen automatically
-                # But we'll explicitly create a response as a fallback
-                if not getattr(client, 'is_responding', False):
-                    # Set responding state
-                    client.is_responding = True
+                # ALWAYS explicitly create a response to ensure we get one
+                # This is critical for real-time conversation
+                logger.info(f"Setting is_responding=True for {sid}")
+                client.is_responding = True
+                if hasattr(client, 'response_complete_event'):
+                    client.response_complete_event.clear()
+
+                # Send the response.create event
+                # This ensures we get a response even if the server-side VAD doesn't trigger
+                logger.info(f"Explicitly creating response for {sid}")
+
+                # Send the response.create event using the client's send_event method
+                logger.info(f"Sending response.create event for {sid}")
+                response_result = loop.run_until_complete(client.send_event({
+                    "type": "response.create"
+                }))
+
+                # Check if the response creation was successful
+                if not response_result:
+                    logger.error(f"Failed to create response for {sid}")
+                    # Reset responding state on error
+                    client.is_responding = False
                     if hasattr(client, 'response_complete_event'):
-                        client.response_complete_event.clear()
+                        client.response_complete_event.set()
+                    return
 
-                    # Send the response.create event
-                    loop.run_until_complete(client.send_event({
-                        "type": "response.create"
-                    }))
-                    logger.info(f"Response creation initiated after auto-commit for {sid}")
+                logger.info(f"Response creation initiated for {sid}")
 
-                    # Emit a debug event to help troubleshoot
-                    socketio.emit('debug', {'message': 'Response creation initiated after auto-commit'}, room=sid)
+                # Emit a debug event to help troubleshoot
+                socketio.emit('debug', {'message': 'Response creation initiated'}, room=sid)
 
                 # Close the loop
                 loop.close()
+                logger.info(f"Event loop closed for {sid}")
             except Exception as e:
-                logger.error(f"Error in auto-commit: {e}")
+                logger.error(f"Error in auto_commit_audio: {e}")
                 import traceback
-                logger.error(traceback.format_exc())
+                logger.error(f"Traceback: {traceback.format_exc()}")
+                # Reset responding state on error
+                client.is_responding = False
+                if hasattr(client, 'response_complete_event'):
+                    client.response_complete_event.set()
+        else:
+            logger.error(f"Cannot auto-commit audio: WebSocket not connected for {sid}")
     except Exception as e:
-        logger.error(f"Error in auto_commit_audio: {e}")
+        logger.error(f"Unexpected error in auto_commit_audio: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+@socketio.on('reset_client_state')
+def handle_reset_client_state():
+    """Reset the client state completely."""
+    try:
+        logger.info(f"Reset client state requested by {request.sid}")
+
+        # Get session data
+        if not hasattr(handle_initialize_stream, 'user_sessions'):
+            logger.error("No user sessions dictionary found")
+            emit('error', {'message': 'No sessions initialized'})
+            return
+
+        session_data = handle_initialize_stream.user_sessions.get(request.sid)
+        if not session_data:
+            logger.error(f"No session data found for {request.sid}")
+            emit('error', {'message': 'Session not initialized'})
+            return
+
+        client = session_data.get('client')
+        if not client:
+            logger.error(f"No client found in session data for {request.sid}")
+            emit('error', {'message': 'Client not initialized'})
+            return
+
+        # Reset client state
+        client.is_responding = False
+        if hasattr(client, 'response_complete_event'):
+            client.response_complete_event.set()
+
+        # Reset any other state variables that might be causing issues
+        if hasattr(client, 'audio_queue'):
+            client.audio_queue = []
+
+        if hasattr(client, 'is_processing_queue'):
+            client.is_processing_queue = False
+
+        logger.info(f"Client state reset for {request.sid}")
+        emit('debug', {'message': 'Client state reset successfully'})
+
+    except Exception as e:
+        logger.error(f"Error resetting client state: {e}")
         import traceback
         logger.error(traceback.format_exc())
+        emit('error', {'message': f'Error resetting client state: {str(e)}'})
 
 @socketio.on('force_response')
 def handle_force_response():
@@ -2333,62 +3106,176 @@ def handle_force_response():
             emit('error', {'message': 'Client not initialized'})
             return
 
-        # Check if client has a WebSocket connection
-        if not hasattr(client, 'ws') or not client.ws or getattr(client, 'is_disconnected', False):
-            logger.error(f"Client WebSocket not connected for {request.sid}")
-            emit('error', {'message': 'Voice service not connected'})
-            return
-
         # Store the sid
         sid = request.sid
 
-        # Create a new event loop for this operation
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Check if the WebSocket is closed or disconnected
+        ws_closed = not hasattr(client, 'ws') or client.ws is None or getattr(client, 'is_disconnected', False)
+        if hasattr(client, 'ws') and client.ws is not None and hasattr(client.ws, 'closed'):
+            ws_closed = ws_closed or client.ws.closed
+
+        if ws_closed:
+            logger.warning(f"WebSocket is closed for {sid}, attempting to reconnect")
+            socketio.emit('debug', {'message': 'WebSocket is closed, attempting to reconnect'}, room=sid)
+
+            # Create a new event loop for reconnection
+            reconnect_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(reconnect_loop)
+
+            try:
+                # Try to reconnect
+                reconnected = reconnect_loop.run_until_complete(client.initialize_audio())
+                reconnect_loop.close()
+
+                if not reconnected:
+                    logger.error(f"Failed to reconnect WebSocket for {sid}")
+                    socketio.emit('debug', {'message': 'Failed to reconnect WebSocket'}, room=sid)
+                    emit('error', {'message': 'Failed to reconnect WebSocket'})
+                    return
+                logger.info(f"Successfully reconnected WebSocket for {sid}")
+                socketio.emit('debug', {'message': 'Successfully reconnected WebSocket'}, room=sid)
+            except Exception as reconnect_error:
+                logger.error(f"Error reconnecting WebSocket: {reconnect_error}")
+                import traceback
+                logger.error(traceback.format_exc())
+                socketio.emit('debug', {'message': f'Error reconnecting WebSocket: {str(reconnect_error)}'}, room=sid)
+                emit('error', {'message': f'Error reconnecting WebSocket: {str(reconnect_error)}'})
+
+                if 'reconnect_loop' in locals() and reconnect_loop.is_running():
+                    reconnect_loop.close()
+                return
 
         try:
+            # Reset the responding state regardless of current state
+            # This ensures we can force a response even if the client is stuck
+            logger.info(f"Resetting client response state for {sid}")
+            client.is_responding = False
+            if hasattr(client, 'response_complete_event'):
+                client.response_complete_event.set()
+
+            # Add a small delay to ensure the state reset is processed
+            time.sleep(0.2)
+
+            # Create a new event loop for this operation
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
             # Send a test message to force a response
-            loop.run_until_complete(client.send_event({
-                "type": "input_audio_buffer.append",
-                "audio": base64.b64encode(b"test audio data").decode('utf-8')
-            }))
+            try:
+                # Create a simple test audio signal (sine wave)
+                import numpy as np
+                sample_rate = 16000  # 16kHz
+                duration = 0.5  # 0.5 seconds
+                frequency = 440  # 440 Hz (A4 note)
+                t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+                test_audio = (np.sin(2 * np.pi * frequency * t) * 32767).astype(np.int16)
 
-            # Commit the audio buffer
-            loop.run_until_complete(client.send_event({
-                "type": "input_audio_buffer.commit"
-            }))
+                # Convert to bytes
+                # Use numpy's built-in tobytes method instead of iterating
+                test_audio_bytes = test_audio.tobytes()
 
-            # Create a response
-            if not client.is_responding:
-                client.is_responding = True
-                if hasattr(client, 'response_complete_event'):
-                    client.response_complete_event.clear()
+                # Encode to base64
+                test_audio_base64 = base64.b64encode(test_audio_bytes).decode('utf-8')
 
-                # Send the response.create event
-                loop.run_until_complete(client.send_event({
+                logger.info(f"Created test audio signal, length: {len(test_audio_base64)} bytes")
+                socketio.emit('debug', {'message': f'Created test audio signal, length: {len(test_audio_base64)} bytes'}, room=sid)
+
+                # Send the test audio
+                send_result = loop.run_until_complete(client.send_event({
+                    "type": "input_audio_buffer.append",
+                    "audio": test_audio_base64
+                }))
+
+                # Check if the send was successful
+                if not send_result:
+                    logger.error("Failed to send test audio to OpenAI WebSocket")
+                    socketio.emit('error', {'message': 'Failed to send test audio'}, room=sid)
+                    socketio.emit('debug', {'message': 'Failed to send test audio'}, room=sid)
+                    return {'success': False, 'message': 'Failed to send test audio'}
+
+                # Commit the audio buffer
+                commit_result = loop.run_until_complete(client.send_event({
+                    "type": "input_audio_buffer.commit"
+                }))
+
+                # Check if the commit was successful
+                if not commit_result:
+                    logger.error(f"Failed to commit audio buffer for {sid}")
+                    socketio.emit('error', {'message': 'Failed to commit audio buffer'}, room=sid)
+                    socketio.emit('debug', {'message': 'Failed to commit audio buffer'}, room=sid)
+                    return {'success': False, 'message': 'Failed to commit audio buffer'}
+
+                logger.info(f"Test audio sent and committed for {sid}")
+            except Exception as audio_error:
+                logger.warning(f"Error sending test audio: {audio_error}")
+                socketio.emit('debug', {'message': f'Error sending test audio: {str(audio_error)}'}, room=sid)
+                # Continue anyway, as we can still try to create a response
+
+            # Now set the responding state and create a response
+            client.is_responding = True
+            if hasattr(client, 'response_complete_event'):
+                client.response_complete_event.clear()
+
+            # Send the response.create event
+            try:
+                response_result = loop.run_until_complete(client.send_event({
                     "type": "response.create"
                 }))
 
-                logger.info(f"Forced response creation for {sid}")
-                socketio.emit('debug', {'message': 'Forced response creation'}, room=sid)
-            else:
-                logger.warning(f"Client is already responding for {sid}")
-                socketio.emit('debug', {'message': 'Client is already responding'}, room=sid)
+                # Check if the response creation was successful
+                if not response_result:
+                    logger.error(f"Failed to create response for {sid}")
+                    socketio.emit('error', {'message': 'Failed to create response'}, room=sid)
+                    socketio.emit('debug', {'message': 'Failed to create response'}, room=sid)
+                    # Reset responding state on error
+                    client.is_responding = False
+                    if hasattr(client, 'response_complete_event'):
+                        client.response_complete_event.set()
+                    return {'success': False, 'message': 'Failed to create response'}
 
-            # Close the loop
-            loop.close()
+                logger.info(f"Forced response creation for {sid}")
+                socketio.emit('debug', {'message': 'Forced response creation after state reset'}, room=sid)
+            except Exception as response_error:
+                logger.error(f"Error creating response: {response_error}")
+                socketio.emit('debug', {'message': f'Error creating response: {str(response_error)}'}, room=sid)
+                # Reset the responding state if we failed to create a response
+                client.is_responding = False
+                if hasattr(client, 'response_complete_event'):
+                    client.response_complete_event.set()
+                raise response_error
 
             emit('debug', {'status': 'success', 'message': 'Force response command sent'})
+
+            # Close the loop properly
+            try:
+                # Make sure all tasks are complete
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    logger.info(f"Waiting for {len(pending)} pending tasks to complete")
+                    loop.run_until_complete(asyncio.gather(*pending))
+
+                # Close the loop
+                loop.close()
+                logger.info("Event loop closed successfully")
+            except Exception as loop_error:
+                logger.error(f"Error closing event loop: {loop_error}")
+
         except Exception as e:
             logger.error(f"Error forcing response: {e}")
             import traceback
             logger.error(traceback.format_exc())
             emit('error', {'message': f'Error forcing response: {str(e)}'})
 
-            # Close the loop
-            loop.close()
+            # Close the loop if it exists
+            if 'loop' in locals() and not loop.is_closed():
+                try:
+                    loop.close()
+                except Exception as loop_error:
+                    logger.error(f"Error closing event loop: {loop_error}")
     except Exception as e:
         logger.error(f"Unexpected error in handle_force_response: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         emit('error', {'message': f'Server error: {str(e)}'})
 
 @socketio.on('commit_audio')
@@ -2437,14 +3324,32 @@ def handle_commit_audio():
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
 
-                    # Send the commit event using the client's send_event method
-                    loop.run_until_complete(client.send_event({
-                        "type": "input_audio_buffer.commit"
-                    }))
-                    logger.info(f"Audio buffer committed for {sid}")
+                    try:
+                        # Send the commit event using the client's send_event method
+                        commit_result = loop.run_until_complete(client.send_event({
+                            "type": "input_audio_buffer.commit"
+                        }))
 
-                    # Add a small delay to ensure the commit is processed
-                    time.sleep(0.2)
+                        # Check if the commit was successful
+                        if not commit_result:
+                            logger.error(f"Failed to commit audio buffer for {sid}")
+                            socketio.emit('error', {'message': 'Failed to commit audio buffer'}, room=sid)
+                            socketio.emit('debug', {'message': 'Failed to commit audio buffer'}, room=sid)
+                            # Close the loop before returning
+                            loop.close()
+                            return
+
+                        logger.info(f"Audio buffer committed for {sid}")
+
+                        # Add a small delay to ensure the commit is processed
+                        time.sleep(0.2)
+                    except Exception as send_error:
+                        logger.error(f"Error sending commit event: {send_error}")
+                        socketio.emit('error', {'message': f'Error committing audio: {str(send_error)}'}, room=sid)
+                        socketio.emit('debug', {'message': f'Error committing audio: {str(send_error)}'}, room=sid)
+                        # Close the loop before returning
+                        loop.close()
+                        return
 
                     # Create a response if not already responding
                     # Note: With server-side VAD, this should happen automatically,
@@ -2455,9 +3360,21 @@ def handle_commit_audio():
                             client.response_complete_event.clear()
 
                         # Send the response.create event using the client's send_event method
-                        loop.run_until_complete(client.send_event({
+                        response_result = loop.run_until_complete(client.send_event({
                             "type": "response.create"
                         }))
+
+                        # Check if the response creation was successful
+                        if not response_result:
+                            logger.error(f"Failed to create response for {sid}")
+                            socketio.emit('error', {'message': 'Failed to create response'}, room=sid)
+                            socketio.emit('debug', {'message': 'Failed to create response'}, room=sid)
+                            # Reset responding state on error
+                            client.is_responding = False
+                            if hasattr(client, 'response_complete_event'):
+                                client.response_complete_event.set()
+                            return
+
                         logger.info(f"Response creation initiated for {sid}")
 
                         # Emit an event to the client to indicate that the response is being generated
@@ -2470,8 +3387,19 @@ def handle_commit_audio():
                         # Emit a debug event to help troubleshoot
                         socketio.emit('debug', {'message': 'Client is already responding, skipping response.create'}, room=sid)
 
-                    # Close the loop
-                    loop.close()
+                    # Close the loop properly
+                    try:
+                        # Make sure all tasks are complete
+                        pending = asyncio.all_tasks(loop)
+                        if pending:
+                            logger.info(f"Waiting for {len(pending)} pending tasks to complete")
+                            loop.run_until_complete(asyncio.gather(*pending))
+
+                        # Close the loop
+                        loop.close()
+                        logger.info("Event loop closed successfully")
+                    except Exception as loop_error:
+                        logger.error(f"Error closing event loop: {loop_error}")
 
                     logger.info(f"Audio buffer committed and response created for {sid}")
                 except Exception as e:
@@ -2483,6 +3411,13 @@ def handle_commit_audio():
                     if hasattr(client, 'response_complete_event'):
                         client.response_complete_event.set()
                     socketio.emit('error', {'message': f'Error processing audio: {str(e)}'}, room=sid)
+
+                    # Close the loop if it exists
+                    if 'loop' in locals() and not loop.is_closed():
+                        try:
+                            loop.close()
+                        except Exception as loop_error:
+                            logger.error(f"Error closing event loop: {loop_error}")
             else:
                 logger.error(f"WebSocket not connected for {sid}")
                 socketio.emit('error', {'message': 'Voice service not connected'}, room=sid)
@@ -2507,24 +3442,38 @@ def emit_realtime_events(client, event):
     try:
         event_type = event.get('type')
 
-        # Log all events for debugging
-        logger.debug(f"Received event from OpenAI: {event_type}")
+        # Log all events for debugging - use INFO level for better visibility
+        logger.info(f"Received event from OpenAI: {event_type}")
 
-        # Log full event details for important events
-        important_events = ["error", "response.started", "response.done", "transcript.final"]
-        if event_type in important_events:
-            logger.info(f"Important event details: {event}")
+        # Log full event details for all events during troubleshooting
+        # This will help us see exactly what's coming from OpenAI
+        logger.info(f"Event details: {event}")
+
+        # Log client state
+        logger.info(f"Client state: audio_ready={getattr(client, 'audio_ready', False)}, is_responding={getattr(client, 'is_responding', False)}")
+
+        # Log WebSocket state
+        ws_connected = hasattr(client, 'ws') and client.ws is not None
+        is_closed = False
+        if ws_connected and hasattr(client.ws, 'closed'):
+            is_closed = client.ws.closed
+        logger.info(f"WebSocket state: connected={ws_connected}, closed={is_closed}, disconnected={getattr(client, 'is_disconnected', False)}")
 
         # Get the session ID from the client
         session_id = getattr(client, 'session_id', None)
         if not session_id:
             logger.error(f"No session ID found for client, can't emit event: {event_type}")
+            logger.error(f"Client details: user_id={getattr(client, 'user_id', None)}, username={getattr(client, 'username', None)}")
             return
 
         # Check if the client is marked as disconnected
         if getattr(client, 'is_disconnected', False):
             logger.warning(f"Client is marked as disconnected, skipping event: {event_type}")
+            logger.warning(f"Client details: user_id={getattr(client, 'user_id', None)}, username={getattr(client, 'username', None)}, session_id={session_id}")
             return
+
+        # Log that we're about to emit the event to the client
+        logger.info(f"Emitting event {event_type} to client session {session_id}")
 
         # Handle different event types
         if event_type == "response.text.delta":
@@ -2542,10 +3491,44 @@ def emit_realtime_events(client, event):
             audio_data = event.get('delta', '')
             if audio_data:
                 logger.info(f"Emitting audio delta of length {len(audio_data)}")
-                # Emit both event names to ensure compatibility
-                socketio.emit('audio_response', {'delta': audio_data}, room=session_id)
-                socketio.emit('audio_response_delta', {'delta': audio_data}, room=session_id)
-                logger.info(f"Audio response emitted to session {session_id}")
+
+                # Log more details about the audio data
+                logger.info(f"Audio data type: {type(audio_data)}")
+
+                # Add timestamp to help client with sequencing
+                current_time = time.time()
+
+                try:
+                    # Emit both event names to ensure compatibility
+                    logger.info(f"Emitting 'audio_response' event to session {session_id}")
+                    socketio.emit('audio_response', {
+                        'delta': audio_data,
+                        'timestamp': current_time
+                    }, room=session_id)
+
+                    logger.info(f"Emitting 'audio_response_delta' event to session {session_id}")
+                    socketio.emit('audio_response_delta', {
+                        'delta': audio_data,
+                        'timestamp': current_time
+                    }, room=session_id)
+
+                    logger.info(f"Audio response events emitted successfully to session {session_id}")
+                except Exception as e:
+                    logger.error(f"Error emitting audio response events: {e}")
+                    logger.error(f"Error details: {str(e)}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+
+                # Update client state to indicate we're responding
+                if not getattr(client, 'is_responding', False):
+                    client.is_responding = True
+                    logger.info(f"Updated client.is_responding to True after receiving audio delta")
+
+                # Also emit a debug event to confirm audio is being sent
+                socketio.emit('audio_debug', {
+                    'message': f'Audio response sent: {len(audio_data)} bytes',
+                    'timestamp': current_time
+                }, room=session_id)
 
         elif event_type == "response.done":
             # Response complete
