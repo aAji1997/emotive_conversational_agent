@@ -917,6 +917,13 @@ class ConversationMemoryAgent:
             force_memory_consideration: If True, prioritize memory storage consideration
             force_memory_retrieval: If True, prioritize memory retrieval
         """
+        # Initialize result dictionary with default values in case of failure
+        result = {
+            "should_store": force_memory_consideration,
+            "should_retrieve": force_memory_retrieval,
+            "memories": []
+        }
+
         # Create a context from recent conversation history
         recent_history = self.conversation_history[-5:] if len(self.conversation_history) > 5 else self.conversation_history
         context = "\n".join([f"{entry['role']}: {entry['content']}" for entry in recent_history])
@@ -985,25 +992,61 @@ class ConversationMemoryAgent:
             # Print statement for visibility
             print(f"\n[MEMORY ORCHESTRATOR] Evaluating message for memory storage:\n  Role: {role}\n  Message: {message[:100]}...\n  Force consideration: {force_memory_consideration}")
 
-            # Run the orchestrator
-            from google.genai import types
-            content = types.Content(role='user', parts=[types.Part(text=orchestrator_prompt)])
-            events = orchestrator_runner.run(user_id=self.user_id or "test_user", session_id=orchestrator_session_id, new_message=content)
+            try:
+                # Run the orchestrator
+                from google.genai import types
+                content = types.Content(role='user', parts=[types.Part(text=orchestrator_prompt)])
+                events = orchestrator_runner.run(user_id=self.user_id or "test_user", session_id=orchestrator_session_id, new_message=content)
 
-            # Process the response
-            orchestrator_response = None
-            for event in events:
-                if event.is_final_response():
-                    orchestrator_response = event.content.parts[0].text
-                    break
+                # Process the response
+                orchestrator_response = None
+                for event in events:
+                    if event.is_final_response():
+                        orchestrator_response = event.content.parts[0].text
+                        break
 
-            if orchestrator_response:
-                logger.info(f"Orchestrator response: {orchestrator_response[:100]}...")
-                # Print statement for visibility
-                print(f"\n[MEMORY ORCHESTRATOR] Decision:\n  {orchestrator_response[:200]}...")
-            else:
-                logger.warning("No response from orchestrator agent")
-                print("\n[MEMORY ORCHESTRATOR] No response from orchestrator agent")
+                if orchestrator_response:
+                    logger.info(f"Orchestrator response: {orchestrator_response[:100]}...")
+                    # Print statement for visibility
+                    print(f"\n[MEMORY ORCHESTRATOR] Decision:\n  {orchestrator_response[:200]}...")
+                else:
+                    logger.warning("No response from orchestrator agent")
+                    print("\n[MEMORY ORCHESTRATOR] No response from orchestrator agent")
+            except Exception as orchestrator_error:
+                logger.error(f"Error running orchestrator agent: {orchestrator_error}")
+                print(f"\n[MEMORY ORCHESTRATOR] No response from orchestrator agent: {orchestrator_error}")
+
+                # If force_memory_consideration is True, we'll still try to store the memory
+                # even if the orchestrator fails
+                if force_memory_consideration:
+                    print(f"\n[MEMORY ORCHESTRATOR] Forcing memory storage despite orchestrator error")
+                    try:
+                        # Extract key information from the message
+                        content = message
+                        importance = 8  # Default high importance for forced memories
+                        category = "user_statement"
+
+                        # Store the memory directly
+                        memory_data = {
+                            "content": content,
+                            "importance": importance,
+                            "category": category,
+                            "timestamp": datetime.now().isoformat(),
+                            "source": role,
+                            "conversation_mode": conversation_mode,
+                            "user_id": self.user_id
+                        }
+
+                        # Generate embedding
+                        embedding = self.db_connector.create_embedding(content)
+                        memory_data["embedding"] = embedding
+
+                        # Store the memory
+                        memory_id = self.db_connector.store_memory(memory_data)
+                        print(f"\n[MEMORY STORAGE] Directly stored memory after orchestrator error:\n  Content: {content}\n  User ID: {self.user_id or 'None'}\n  Category: {category}\n  Importance: {importance}")
+                    except Exception as storage_error:
+                        logger.error(f"Error storing memory directly: {storage_error}")
+                        print(f"\n[ERROR] Failed to store memory directly: {storage_error}")
         except Exception as e:
             logger.error(f"Error running orchestrator agent: {e}")
         finally:

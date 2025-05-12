@@ -66,14 +66,45 @@ class MemoryIntegration:
 
         # Use Gemini 2.0 Flash directly for the orchestrator model
         if gemini_api_key:
-            # Set the API key in the environment for direct model usage
-            import os
-            os.environ["GOOGLE_API_KEY"] = gemini_api_key
-            os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
-            # Use the direct model name for Gemini in ADK
-            self.orchestrator_model = "gemini-2.0-flash"  # Direct model name for Gemini in ADK
+            try:
+                # Set the API key in the environment for direct model usage
+                import os
+                os.environ["GOOGLE_API_KEY"] = gemini_api_key
+                os.environ["GOOGLE_GENAI_USE_VERTEXAI"] = "FALSE"
+
+                # Test if Gemini API is available
+                import google.genai as genai
+                genai.configure(api_key=gemini_api_key)
+
+                # Try a simple API call to check if Gemini is available
+                try:
+                    model = genai.GenerativeModel('gemini-2.0-flash')
+                    response = model.generate_content("Test")
+                    # If we get here, Gemini is available
+                    print("[MEMORY INTEGRATION] Gemini API is available, using gemini-2.0-flash")
+                    # Use the direct model name for Gemini in ADK
+                    self.orchestrator_model = "gemini-2.0-flash"  # Direct model name for Gemini in ADK
+                except Exception as gemini_error:
+                    print(f"[MEMORY INTEGRATION] Gemini API test failed: {gemini_error}")
+                    print("[MEMORY INTEGRATION] Falling back to OpenAI model for orchestrator")
+                    # Fall back to GPT-4o-mini if Gemini API fails
+                    self.orchestrator_model = LiteLlm(
+                        model="gpt-4o-mini",
+                        api_key=openai_api_key,
+                        temperature=0.1
+                    )
+            except Exception as e:
+                print(f"[MEMORY INTEGRATION] Error configuring Gemini: {e}")
+                print("[MEMORY INTEGRATION] Falling back to OpenAI model for orchestrator")
+                # Fall back to GPT-4o-mini if Gemini configuration fails
+                self.orchestrator_model = LiteLlm(
+                    model="gpt-4o-mini",
+                    api_key=openai_api_key,
+                    temperature=0.1
+                )
         else:
             # Fall back to GPT-4o-mini if Gemini key is not available
+            print("[MEMORY INTEGRATION] No Gemini API key found, using OpenAI model for orchestrator")
             self.orchestrator_model = LiteLlm(
                 model="gpt-4o-mini",
                 api_key=openai_api_key,

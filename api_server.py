@@ -757,14 +757,9 @@ except Exception as e:
     openai_api_key = os.environ.get('OPENAI_API_KEY', '')
     gemini_api_key = os.environ.get('GEMINI_API_KEY', '')
 
-# Set an environment variable to detect duplicate initialization
-import os
+# Initialize Supabase connection
 print("API Server starting...")
-if os.environ.get('SUPABASE_INITIALIZED') == 'true':
-    print("Detected duplicate initialization, skipping...")
-else:
-    os.environ['SUPABASE_INITIALIZED'] = 'true'
-    print("First initialization, proceeding...")
+print("Initializing Supabase connection...")
 
 # Initialize shared emotion state
 shared_emotion_scores = SharedEmotionState()
@@ -1109,14 +1104,23 @@ def login():
     data = request.json
     username = data.get('username', '')
 
+    logger.info(f"Login attempt for username: {username}")
+
     if not username:
         logger.error("Login attempt with empty username")
         return jsonify({"error": "Username is required"}), 400
 
+    # Log Supabase credentials status
+    logger.info(f"Supabase URL: {user_manager.supabase_url[:10]}... (length: {len(user_manager.supabase_url) if user_manager.supabase_url else 0})")
+    logger.info(f"Supabase Key: {user_manager.supabase_key[:10]}... (length: {len(user_manager.supabase_key) if user_manager.supabase_key else 0})")
+
     # Ensure we have a valid connection to Supabase
+    logger.info("Attempting to connect to Supabase...")
     if not user_manager.connect():
         logger.error(f"Failed to connect to database during login for username: {username}")
         return jsonify({"error": "Failed to connect to database"}), 500
+
+    logger.info("Successfully connected to Supabase")
 
     # Check if user exists, create if not
     try:
@@ -1244,12 +1248,40 @@ def chat():
     if is_first_message:
         logger.info(f"Processing first message for user {username} (ID: {user_id}). Initialization status: {initialization_status}")
 
-    # Process the message asynchronously
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    # Pass message as a parameter to the method
-    response = loop.run_until_complete(client.send_chat_message_and_get_response(message=message))
-    loop.close()
+    try:
+        # Process the message asynchronously
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        # Pass message as a parameter to the method
+        response = loop.run_until_complete(client.send_chat_message_and_get_response(message=message))
+        loop.close()
+    except Exception as e:
+        logger.error(f"Error processing chat message: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+
+        # Check if this is a Gemini API error
+        if "google.genai.errors" in str(e) and "UNAVAILABLE" in str(e):
+            # This is a Gemini API error, provide a helpful message
+            error_message = "The Gemini API is currently unavailable. Your message has been received, but the memory system is temporarily offline. Please try again in a few minutes."
+
+            # Add a fallback response that acknowledges the issue
+            response = f"I've received your message: '{message}'\n\nHowever, I'm currently experiencing an issue with my memory system. I can still chat with you, but I might not remember all context from our previous conversations until this is resolved. How can I help you today?"
+        else:
+            # Generic error
+            error_message = f"An error occurred while processing your message: {str(e)}"
+            response = "I apologize, but I encountered an error while processing your message. Please try again or contact support if the issue persists."
+
+        logger.error(f"Returning error response to user: {error_message}")
+
+        # Still return a response to avoid breaking the UI
+        return jsonify({
+            "response": response,
+            "emotions": get_current_emotions(),
+            "is_first_message": is_first_message,
+            "initialization_status": initialization_status,
+            "error": error_message
+        })
 
     return jsonify({
         "response": response,
@@ -1307,23 +1339,44 @@ def get_emotions():
     """Get current emotion data."""
     user_id = request.args.get('user_id', '')
 
-    # If user_id is provided, get client-specific emotion data
-    if user_id and user_id in clients:
-        client = clients[user_id]
-        # Use the client's sentiment manager to get emotion data
-        if client.enable_sentiment_analysis and hasattr(client, 'sentiment_manager') and client.sentiment_manager:
-            emotion_scores = client.sentiment_manager.get_current_emotion_scores()
-            if emotion_scores:
-                logger.info(f"Returning client-specific emotion data for user {user_id}: {emotion_scores}")
-                return jsonify(emotion_scores)
-            else:
-                logger.warning(f"Client sentiment manager returned no emotion data for user {user_id}")
-        else:
-            logger.warning(f"Client has no sentiment manager or sentiment analysis is disabled for user {user_id}")
+    logger.info(f"Emotions requested for user_id: {user_id}")
+
+    # If no user_id provided, return global data
+    if not user_id:
+        logger.info("No user_id provided, returning global emotion data")
+        return jsonify(get_current_emotions())
+
+    # If user_id is provided but client doesn't exist, create it
+    if user_id not in clients:
+        logger.info(f"Client not found for user_id {user_id}, creating new client")
+        # Try to get username from database
+        username = None
+        if user_manager.connect():
+            user = user_manager.get_user_by_id(user_id)
+            if user:
+                username = user.get('username')
+                logger.info(f"Found username {username} for user_id {user_id}")
+
+        # Create the client
+        client = get_or_create_client(user_id, username)
+        logger.info(f"Created new client for user_id {user_id}")
     else:
-        logger.info(f"No user_id provided or user not found, returning global emotion data")
+        client = clients[user_id]
+        logger.info(f"Found existing client for user_id {user_id}")
+
+    # Use the client's sentiment manager to get emotion data
+    if client.enable_sentiment_analysis and hasattr(client, 'sentiment_manager') and client.sentiment_manager:
+        emotion_scores = client.sentiment_manager.get_current_emotion_scores()
+        if emotion_scores:
+            logger.info(f"Returning client-specific emotion data for user {user_id}")
+            return jsonify(emotion_scores)
+        else:
+            logger.warning(f"Client sentiment manager returned no emotion data for user {user_id}")
+    else:
+        logger.warning(f"Client has no sentiment manager or sentiment analysis is disabled for user {user_id}")
 
     # Fall back to global emotion data
+    logger.info(f"Falling back to global emotion data for user {user_id}")
     return jsonify(get_current_emotions())
 
 @app.route('/api/test-emotions', methods=['POST'])
@@ -1380,19 +1433,44 @@ def get_memories():
     """Get memories for a user."""
     user_id = request.args.get('user_id', '')
 
+    logger.info(f"Memories requested for user_id: {user_id}")
+
     if not user_id:
+        logger.error("User ID is required")
         return jsonify({"error": "User ID is required"}), 400
 
+    # Ensure we have a valid connection to Supabase
+    logger.info("Ensuring Supabase connection for memory retrieval...")
+    if not user_manager.connect():
+        logger.error(f"Failed to connect to database during memory retrieval for user_id: {user_id}")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
+    # Check if user exists in database
+    user = user_manager.get_user_by_id(user_id)
+    if not user:
+        logger.error(f"User with ID {user_id} not found in database")
+        return jsonify({"error": "User not found"}), 404
+
+    username = user.get('username')
+    logger.info(f"Found username {username} for user_id {user_id}")
+
     # Get or create client for this user
-    client = get_or_create_client(user_id)
+    client = get_or_create_client(user_id, username)
+    logger.info(f"Got client for user {username} (ID: {user_id})")
 
     # Get memories
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    memories = loop.run_until_complete(client.get_memories())
-    loop.close()
+    try:
+        logger.info(f"Retrieving memories for user {username} (ID: {user_id})")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        memories = loop.run_until_complete(client.get_memories())
+        loop.close()
 
-    return jsonify({"memories": memories})
+        logger.info(f"Retrieved {len(memories)} memories for user {username} (ID: {user_id})")
+        return jsonify({"memories": memories})
+    except Exception as e:
+        logger.error(f"Error retrieving memories: {e}")
+        return jsonify({"error": f"Failed to retrieve memories: {str(e)}"}), 500
 
 @app.route('/api/store-memory', methods=['POST'])
 def store_memory():
@@ -1401,22 +1479,52 @@ def store_memory():
     memory = data.get('memory', '')
     user_id = data.get('user_id', '')
 
+    logger.info(f"Memory storage requested for user_id: {user_id}")
+
     if not memory:
+        logger.error("Memory content is required")
         return jsonify({"error": "Memory content is required"}), 400
 
     if not user_id:
+        logger.error("User ID is required")
         return jsonify({"error": "User ID is required"}), 400
 
+    # Ensure we have a valid connection to Supabase
+    logger.info("Ensuring Supabase connection for memory storage...")
+    if not user_manager.connect():
+        logger.error(f"Failed to connect to database during memory storage for user_id: {user_id}")
+        return jsonify({"error": "Failed to connect to database"}), 500
+
+    # Check if user exists in database
+    user = user_manager.get_user_by_id(user_id)
+    if not user:
+        logger.error(f"User with ID {user_id} not found in database")
+        return jsonify({"error": "User not found"}), 404
+
+    username = user.get('username')
+    logger.info(f"Found username {username} for user_id {user_id}")
+
     # Get or create client for this user
-    client = get_or_create_client(user_id)
+    client = get_or_create_client(user_id, username)
+    logger.info(f"Got client for user {username} (ID: {user_id})")
 
     # Store memory
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    success = loop.run_until_complete(client.store_memory(memory_content=memory))
-    loop.close()
+    try:
+        logger.info(f"Storing memory for user {username} (ID: {user_id})")
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        success = loop.run_until_complete(client.store_memory(memory_content=memory))
+        loop.close()
 
-    return jsonify({"success": success})
+        if success:
+            logger.info(f"Successfully stored memory for user {username} (ID: {user_id})")
+        else:
+            logger.warning(f"Failed to store memory for user {username} (ID: {user_id})")
+
+        return jsonify({"success": success})
+    except Exception as e:
+        logger.error(f"Error storing memory: {e}")
+        return jsonify({"error": f"Failed to store memory: {str(e)}"}), 500
 
 def get_or_create_client(user_id, username=None):
     """Get or create a client for the given user ID."""
@@ -1710,9 +1818,28 @@ def get_current_emotions():
             "user": user_scores,
             "assistant": assistant_scores
         }
+
+    # Default values with some baseline emotions for a more natural initial state
+    default_user = {emotion: 0 for emotion in CORE_EMOTIONS}
+    default_assistant = {
+        'Joy': 1.0,       # Assistants are generally positive
+        'Trust': 2.0,     # Assistants aim to build trust
+        'Fear': 0.0,      # Assistants rarely express fear
+        'Surprise': 0.5,  # Some mild surprise
+        'Sadness': 0.0,   # Assistants rarely express sadness
+        'Disgust': 0.0,   # Assistants rarely express disgust
+        'Anger': 0.0,     # Assistants rarely express anger
+        'Anticipation': 1.5  # Assistants often express anticipation
+    }
+
+    # Ensure all core emotions are present
+    for emotion in CORE_EMOTIONS:
+        if emotion not in default_assistant:
+            default_assistant[emotion] = 0.0
+
     return {
-        "user": {emotion: 0 for emotion in CORE_EMOTIONS},
-        "assistant": {emotion: 0 for emotion in CORE_EMOTIONS}
+        "user": default_user,
+        "assistant": default_assistant
     }
 
 # Helper function to create async methods for the client

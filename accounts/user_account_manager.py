@@ -75,8 +75,12 @@ class UserAccountManager:
             return True
 
         # Always load credentials to ensure they're available
+        logger.info("Loading Supabase credentials...")
         if not self.load_credentials():
+            logger.error("Failed to load Supabase credentials")
             return False
+
+        logger.info(f"Credentials loaded - URL: {self.supabase_url[:10]}... Key: {self.supabase_key[:10]}...")
 
         try:
             # Add more detailed logging
@@ -87,8 +91,19 @@ class UserAccountManager:
             logger.info(f"Connecting to Supabase from {caller_info.filename}:{caller_info.lineno}")
 
             # Create a new client regardless of environment variable
+            logger.info("Creating Supabase client...")
             self.supabase_client = create_client(self.supabase_url, self.supabase_key)
             logger.info("Connected to Supabase successfully")
+
+            # Test the connection with a simple query
+            try:
+                logger.info("Testing Supabase connection with a simple query...")
+                response = self.supabase_client.table('users').select('count(*)', count='exact').execute()
+                user_count = response.count if hasattr(response, 'count') else 'unknown'
+                logger.info(f"Connection test successful. User count: {user_count}")
+            except Exception as test_error:
+                logger.warning(f"Connection test query failed: {test_error}")
+                # Continue anyway since the client was created successfully
 
             return True
         except Exception as e:
